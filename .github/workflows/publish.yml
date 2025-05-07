@@ -1,4 +1,4 @@
-name: Publish to npm and GitHub Packages
+name: Publish to npmjs.org & GitHub Packages
 
 on:
   push:
@@ -11,24 +11,27 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Use Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
+          registry-url: 'https://registry.npmjs.org/'
 
-      - name: Configure .npmrc for GitHub Packages
+      - name: Configure authentication for both registries
         run: |
-          echo "@your-scope:registry=https://npm.pkg.github.com/" >> ~/.npmrc
+          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" >> ~/.npmrc
+          echo "@persian-caesar:registry=https://npm.pkg.github.com/" >> ~/.npmrc
           echo "//npm.pkg.github.com/:_authToken=${{ secrets.GH_PACKAGES_TOKEN }}" >> ~/.npmrc
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
-      - name: Build
+      - name: Build package
         run: npm run build
 
       - name: Publish to npmjs.org
