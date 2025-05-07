@@ -16,13 +16,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Setup Node.js
+      - name: Setup Node.js for npmjs
         uses: actions/setup-node@v4
         with:
           node-version: '18'
           registry-url: 'https://registry.npmjs.org/'
 
-      - name: Configure authentication for both registries
+      - name: Configure authentication for npmjs and GitHub Packages
         run: |
           echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" >> ~/.npmrc
           echo "@persian-caesar:registry=https://npm.pkg.github.com/" >> ~/.npmrc
