@@ -1,16 +1,17 @@
-name: Publish Package
+name: Build & Publish
 
 on:
   push:
     branches:
       - main
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -24,8 +25,9 @@ jobs:
 
       - name: Configure .npmrc
         run: |
-          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GH_PACKAGES_TOKEN }}" > ~/.npmrc
+          echo "registry=https://registry.npmjs.org/" > ~/.npmrc
           echo "@persian-caesar:registry=https://npm.pkg.github.com/" >> ~/.npmrc
+          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GH_PACKAGES_TOKEN }}" >> ~/.npmrc
 
       - name: Install dependencies
         run: npm install
