@@ -8,6 +8,9 @@ on:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -17,6 +20,12 @@ jobs:
         with:
           node-version: '18'
           registry-url: 'https://npm.pkg.github.com/'
+          scope: '@persian-caesar'
+
+      - name: Configure .npmrc
+        run: |
+          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GH_PACKAGES_TOKEN }}" > ~/.npmrc
+          echo "@persian-caesar:registry=https://npm.pkg.github.com/" >> ~/.npmrc
 
       - name: Install dependencies
         run: npm install
