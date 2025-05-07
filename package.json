@@ -1,6 +1,6 @@
 {
  "name": "@persian-caesar/chatbot",
- "version": "1.0.0",
+ "version": "0.0.1",
  "description": "A TypeScript-based chatbot package for Persian Caesar",
  "main": "dist/index.js",
  "types": "dist/index.d.ts",
