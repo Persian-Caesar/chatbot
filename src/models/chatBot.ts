@@ -172,6 +172,7 @@ export class ChatBot {
       `https://html.duckduckgo.com/html?q=${encodeURIComponent(query)}`
     );
     const html = await res.text();
+
     // 2. Extract URLs
     const urlRegex = /<a[^>]+?href="(https?:\/\/[^\"]+)"/g;
     const urls: string[] = [];
@@ -179,6 +180,7 @@ export class ChatBot {
     while (urls.length < 3 && (m = urlRegex.exec(html))) {
       urls.push(m[1]);
     }
+    
     // 3. Crawl each and learn
     for (const url of urls) {
       try {
