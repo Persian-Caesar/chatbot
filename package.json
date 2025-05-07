@@ -1,32 +1,32 @@
 {
- "name": "@persian-caesar/chatbot",
- "version": "0.0.1",
- "description": "A TypeScript-based chatbot package for Persian Caesar",
- "main": "dist/index.js",
- "types": "dist/index.d.ts",
- "scripts": {
-  "build": "tsc",
-  "prepublishOnly": "npm run build"
- },
- "repository": {
-  "type": "git",
-  "url": "git+https://github.com/persian-caesar/chatbot.git"
- },
- "publishConfig": {
-  "registry": "https://npm.pkg.github.com/"
- },
- "keywords": [
-  "chatbot",
-  "persian",
-  "caesar",
-  "typescript"
- ],
- "author": "Sobhan-SRZA",
- "license": "MIT",
- "devDependencies": {
-  "typescript": "^5.8.3"
- },
- "dependencies": {
-  "quick.db": "^9.1.7"
- }
+    "name": "@persian-caesar/chatbot",
+    "version": "0.0.2",
+    "description": "A TypeScript-based chatbot package for Persian Caesar",
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "scripts": {
+        "build": "tsc",
+        "prepublishOnly": "npm run build"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/persian-caesar/chatbot.git"
+    },
+    "publishConfig": {
+        "registry": "https://registry.npmjs.org/"
+    },
+    "keywords": [
+        "chatbot",
+        "persian",
+        "caesar",
+        "typescript"
+    ],
+    "author": "Sobhan-SRZA",
+    "license": "MIT",
+    "devDependencies": {
+        "typescript": "^5.8.3"
+    },
+    "dependencies": {
+        "quick.db": "^9.1.7"
+    }
 }

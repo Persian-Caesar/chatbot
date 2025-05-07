@@ -1,6 +1,16 @@
 # chatbot
 A custom chat bot package free for all.
 
+## Example
+```js
+const { Database, ChatBot } = require("@persian-caesar/chatbot");
+const { QuickDB, JSONDriver } = require("quick.db");
+const database = new Database(new QuickDB({ driver: new JSONDriver() }));
+const chatBot = new ChatBot(database, "1");
+const answer = chatBot.handleMessage("hello");
+console.log(answer);
+```
+
 ## Contact
 <div align="center">
   <a href="https://srza.ir" target="_blank">
