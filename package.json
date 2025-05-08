@@ -12,9 +12,6 @@
         "type": "git",
         "url": "git+https://github.com/persian-caesar/chatbot.git"
     },
-    "publishConfig": {
-        "registry": "https://npm.pkg.github.com/"
-    },
     "keywords": [
         "chatbot",
         "persian",
