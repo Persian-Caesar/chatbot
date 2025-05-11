@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+
+<head>
+ <meta charset="UTF-8">
+ <title>چت با ربات</title>
+ <style>
+  body {
+   background-color: black;
+   color: rgb(255, 255, 255);
+   font-family: sans-serif;
+   padding: 1rem;
+  }
+
+  #log {
+   border: 1px solid #ccc;
+   padding: 0.5rem;
+   height: 200px;
+   overflow-y: auto;
+  }
+  
+  #input::placeholder, #input:focus-within {
+   outline: none;
+   color: azure;
+   background-color: black;
+  }
+  #input{
+   outline: none;
+   width: 80%;
+  }
+
+  #send {
+   color: azure;
+   background-color: black;
+   width: 18%;
+  }
+ </style>
+</head>
+
+<body>
+ <div id="log"></div>
+ <input id="input" placeholder="پیام شما..." />
+ <button id="send">ارسال</button>
+
+ <script>
+  const log = document.getElementById('log');
+  const input = document.getElementById('input');
+  const send = document.getElementById('send');
+
+  function appendMessage(who, text) {
+   const p = document.createElement('p');
+   p.textContent = `${who}: ${text}`;
+   log.appendChild(p);
+   log.scrollTop = log.scrollHeight;
+  }
+
+  send.addEventListener('click', async () => {
+   const msg = input.value.trim();
+   if (!msg) return;
+   appendMessage('شما', msg);
+   input.value = '';
+
+   try {
+    const res = await fetch('http://localhost:3000/chat', {
+     method: 'POST',
+     headers: { 'Content-Type': 'application/json' },
+     body: JSON.stringify({ message: msg })
+    });  // Fetch API با حالت پیش‌فرض cors :contentReference[oaicite:1]{index=1}
+
+    const data = await res.json();
+    appendMessage('ربات', data.reply);
+   } catch (err) {
+    appendMessage('خطا', 'ارتباط با سرور برقرار نشد.');
+    console.error(err);
+   }
+  });
+ </script>
+</body>
+
+</html>

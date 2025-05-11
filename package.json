@@ -1,6 +1,6 @@
 {
     "name": "@persian-caesar/chatbot",
-    "version": "0.0.2",
+    "version": "0.0.3",
     "description": "A TypeScript-based chatbot package for Persian Caesar",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
@@ -14,16 +14,29 @@
     },
     "keywords": [
         "chatbot",
+        "ai",
+        "chatgpt",
+        "robot",
+        "javascript",
+        "sobhan-srza",
         "persian",
         "caesar",
-        "typescript"
+        "typescript",
+        "mr-sinre",
+        "nodejs",
+        "npm",
+        "quick.db",
+        "@types/node",
+        "write-file-atomic"
     ],
     "author": "Sobhan-SRZA",
     "license": "MIT",
     "devDependencies": {
+        "@types/node": "^22.15.17",
         "typescript": "^5.8.3"
     },
     "dependencies": {
-        "quick.db": "^9.1.7"
+        "quick.db": "^9.1.7",
+        "write-file-atomic": "^6.0.0"
     }
 }

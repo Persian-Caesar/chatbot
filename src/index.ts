@@ -23,7 +23,7 @@
    SOFTWARE.
  */
 
-import { ChatBot } from "./models/chatBot";
+import { ChatBot } from "./models/ChatBot";
 import Database from "./models/Database";
 
 export { Database };
