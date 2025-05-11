@@ -4,10 +4,6 @@
     "description": "A TypeScript-based chatbot package for Persian Caesar",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
-    "scripts": {
-        "build": "tsc",
-        "prepublishOnly": "npm run build"
-    },
     "repository": {
         "type": "git",
         "url": "git+https://github.com/persian-caesar/chatbot.git"
