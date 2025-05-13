@@ -82,7 +82,7 @@ export class ChatBot {
     }
 
     // 4. Web search
-    if (/چرا|چطور|کیست/.test(clean)) {
+    if (/چرا|چطور|کیست|\?/.test(clean)) {
       const web = await this.search.searchWeb(clean);
       if (web.length) return this.reply(`تو اینترنت اینو پیدا کردم: ${web[0].slice(0, 100)}...`);
     }
@@ -178,13 +178,17 @@ export class ChatBot {
   }
 
   private faq(text: string): string | null {
-    if (/پدر/.test(text)) return "پدر من آقا شایان هست.";
-    if (/سازنده/.test(text)) return "ساختنم آقای sinre بود.";
+    if (/آقات|پدرخواند|عمو|صاحب/.test(text))
+      return "پدر من آقا شایان هست.";
+
+    if (/سازند|پدر|بابا|/.test(text))
+      return "زحمت ساختنم با Mr.Sinre بود.\nکارش داشتی برو وبسایتش لینک ارتباط باهاش رو پیدا میکنی: https://srza.ir";
+
     return null;
   }
 
   private template(): string {
-    const subs = ["من", "بچه", "تو", "ما"]; 
+    const subs = ["من", "بچه", "تو", "ما"];
     const vb = ["دوست‌دارم", "میشناسم", "خندیدم"];
     const nn = ["کارتون", "شیرینی", "بازی"];
     const e = subs[Math.random() * subs.length | 0];
