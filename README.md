@@ -1,5 +1,6 @@
-# chatbot
+# Chat Bot Package
 A custom chat bot package free for all.
+This is free fully persian chatbot.
 
 ## Example
 ```js
