@@ -1,55 +1,110 @@
-
 export class SearchService {
- private readonly WIKI_API = "https://fa.wikipedia.org/w/api.php";
+    private readonly WIKI_API = "https://fa.wikipedia.org/w/api.php";
 
- async searchWeb(query: string) {
-  const sources = [
-   this.searchDuckDuckGo(query),
-   this.searchWikipedia(query),
-  ];
+    async searchWeb(query: string): Promise<string[]> {
+        try {
+            const results = await Promise.allSettled([
+                this.searchDuckDuckGo(query),
+                this.searchWikipedia(query)
+            ]);
 
-  const results = await Promise.allSettled(sources);
-  return this.processResults(results);
- }
+            return this.processResults(results);
+        } catch (error) {
+            console.error("خطا در جستجوی کلی:", error);
+            return [];
+        }
+    }
 
- private async searchDuckDuckGo(query: string) {
-  const res = await fetch(
-   `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json`
-  );
-  return res.json();
- }
+    private async searchDuckDuckGo(query: string) {
+        try {
+            const res = await fetch(
+                `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&no_redirect=1`
+            );
 
- private async searchWikipedia(query: string) {
-  const params = new URLSearchParams({
-   action: "query",
-   list: "search",
-   srsearch: query,
-   format: "json",
-   utf8: ""
-  });
+            if (!res.ok)
+                throw new Error(`HTTP error! status: ${res.status}`);
 
-  const res = await fetch(`${this.WIKI_API}?${params}`);
-  return res.json();
- }
+            return await res.json();
+        } catch (error) {
+            console.error("خطا در جستجوی DuckDuckGo:", error);
+            return null;
+        }
+    }
 
- private processResults(results: PromiseSettledResult<any>[]) {
-  return results.flatMap(result => {
-   if (result.status === "fulfilled") {
-    return this.extractText(result.value);
-   }
-   return [];
-  });
- }
+    private async searchWikipedia(query: string) {
+        try {
+            const params = new URLSearchParams({
+                action: "query",
+                list: "search",
+                srsearch: query,
+                format: "json",
+                utf8: "",
+                srlimit: "5"
+            });
 
- private extractText(data: any): string[] {
-  if (data?.AbstractText) return [data.AbstractText];
+            const res = await fetch(`${this.WIKI_API}?${params}`);
 
-  if (data?.query?.search) return data.query.search.map((s: any) => s.snippet);
+            if (!res.ok)
+                throw new Error(`HTTP error! status: ${res.status}`);
 
-  if (data?.Results) return data.Results.map((r: any) => r.Text);
+            return await res.json();
+        } catch (error) {
+            console.error("خطا در جستجوی ویکی‌پدیا:", error);
+            return null;
+        }
+    }
 
-  return [];
- }
+    private processResults(results: PromiseSettledResult<any>[]): string[] {
+        const extracted: string[] = [];
+
+        results.forEach(result => {
+            if (result.status === "fulfilled" && result.value) {
+                extracted.push(...this.extractText(result.value));
+            }
+        });
+
+        // حذف نتایج تکراری و کوتاه
+        return [...new Set(extracted)]
+            .filter(text => text && text.length > 20)
+            .slice(0, 5);
+    }
+
+    private extractText(data: any): string[] {
+        const results: string[] = [];
+
+        // DuckDuckGo results
+        if (data?.AbstractText) {
+            results.push(data.AbstractText);
+        }
+
+        if (data?.Results) {
+            results.push(...data.Results
+                .filter((r: any) => r.Text)
+                .map((r: any) => r.Text)
+            );
+        }
+
+        // Wikipedia results
+        if (data?.query?.search) {
+            results.push(...data.query.search
+                .filter((s: any) => s.snippet)
+                .map((s: any) => this.cleanSnippet(s.snippet))
+            );
+        }
+
+        return results;
+    }
+
+    // حذف تگ‌های HTML و کاراکترهای خاص
+    private cleanSnippet(snippet: string): string {
+        return snippet
+            .replace(/<span class="searchmatch">|<\/span>/g, "")
+            .replace(/&quot;/g, "\"")
+            .replace(/&#39;/g, "'")
+            .replace(/[^\u0600-\u06FF\s.,!?0-9]/g, "")
+            .replace(/\s+/g, " ")
+            .trim();
+    }
 }
 /**
  * @copyright
