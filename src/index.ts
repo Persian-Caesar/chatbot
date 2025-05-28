@@ -22,11 +22,12 @@
    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
    SOFTWARE.
  */
-
+import "./types";
 import { ChatBot } from "./models/ChatBot";
-import Database from "./models/Database";
+import Database from "./utils/Database";
 
 export { Database };
+
 export default ChatBot;
 /**
  * @copyright
