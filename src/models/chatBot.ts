@@ -3,32 +3,66 @@ import {
   MessageRecord,
   Triple
 } from "../types";
-import { SentimentAnalyzer } from "../utils/SentimentAnalyzer";
-import { SearchService } from "../utils/SearchService";
+import { GeneticAlgorithm } from "../utils/GeneticAlgorithm";
+import { HeapTree } from "../utils/HeapTree";
 import { Config } from "../config";
 import Database from "../utils/Database";
 
 export class ChatBot {
+  private geneticAlgorithm: GeneticAlgorithm;
+  private responseHeap: HeapTree = new HeapTree();
+  private userInterests: { [userId: string]: string[] } = {};
   private shortTermMemory: string[] = [];
   private maxMemorySize = 5;
   private contextKey: string;
   private markovKey: string;
   private kgKey: string;
 
+  private sentimentResponses = Config.sentimentResponses || {
+    positive: ["خوشحال می‌شم که اینقدر شادی!", "عالیه، به همین ترتیب ادامه بده!"],
+    negative: ["اووه، انگار یه کم ناراحتی. می‌خوای بگی چی شده؟", "می‌فهمم، گاهی همه‌چیز سخت می‌شه. بگو چی تو سرته."],
+    excited: ["وای، چقدر هیجان‌انگیز! بیشتر بگو!", "این دیگه فوق‌العاده‌ست!"]
+  };
   private stopWords = new Set<string>([
     "و", "در", "به", "که", "از", "را", "با", "هم", "برای", "این", "آن"
   ]);
-
-  private sentimentResponses = Config.sentimentResponses;
-
-  private sentiment = new SentimentAnalyzer();
-  private search = new SearchService();
+  private topicKeywords = {
+    cartoons: ["کارتون", "انیمیشن", "شخصیت"],
+    toys: ["عروسک", "ماشین", "بازی"],
+    general: ["دوست", "خوب", "جالب"]
+  };
+  private followUpPatterns = [
+    { regex: /من به (\w+) رفتم/, category: "location" },
+    { regex: /من (\w+) کردم/, category: "activity" },
+    { regex: /من (\w+) دوست دارم/, category: "interest" }
+  ];
+  private sentimentKeywords = {
+    positive: ["خوب", "عالی", "خوشحال", "زیبا", "دوست", "عشق", "لذت", "شاد"],
+    negative: ["بد", "ناراحت", "غمگین", "مشکل", "درد", "عصبانی", "خسته"],
+    question: ["چرا", "چطور", "چی", "کجا", "کی", "چه", "؟"]
+  };
 
   constructor(private db: Database, channelId = "global", private system_prompt = Config.systemPrompt) {
     this.contextKey = `chat:${channelId}`;
     this.markovKey = `markov:${channelId}`;
     this.kgKey = `kg:${channelId}`;
     this.initSystem();
+    const initialResponses = [
+      "سلام! چطور می‌تونم باهات گپ بزنم؟",
+      "خوبه، امروز چه خبره؟",
+      "خوشحال می‌شم بدونم چی تو سرته 😊",
+      "چیزی هست که بخوای درباره‌ش حرف بزنیم؟"
+    ];
+    this.geneticAlgorithm = new GeneticAlgorithm(initialResponses);
+  }
+
+  private async initSystem() {
+    if (!(await this.db.has(`${this.contextKey}.0`))) {
+      await this.db.push(this.contextKey, {
+        role: "system",
+        content: this.system_prompt || "من یه چت‌بات دوست‌داشتنی‌ام که عاشق گپ زدنم!",
+      } as MessageRecord);
+    }
   }
 
   private async rememberContext(text: string) {
@@ -38,43 +72,43 @@ export class ChatBot {
     }
   }
 
-  private async findBestResponse(input: string): Promise<string | null> {
-    const history = await this.db.get(this.contextKey) as MessageRecord[];
-    const assistantResponses = history
-      .filter(m => m.role === "assistant")
-      .map(m => m.content);
-
-    const inputTf = this.tf(this.tokenize(input));
-    let bestResponse = "";
-    let bestScore = 0;
-
-    const contextTf = this.tf(this.tokenize(this.shortTermMemory.join(" ")));
-    const contextScore = this.cosine(inputTf, contextTf);
-
-    if (contextScore > bestScore * 1.2) {
-      // اگر متن مرتبط در حافظه کوتاه‌مدت وجود دارد
-      const lastMessage = this.shortTermMemory[this.shortTermMemory.length - 1];
-      return this.generateFollowUp(lastMessage);
-    }
-
-    for (const response of assistantResponses) {
-      const responseTf = this.tf(this.tokenize(response));
-      const score = this.cosine(inputTf, responseTf);
-
-      if (score > bestScore) {
-        bestScore = score;
-        bestResponse = response;
-      }
-    }
-
-    return bestScore > 0.4 ? bestResponse : null;
-  }
-
   private tokenize(text: string): string[] {
     return text
-      .replace(/[.،؛!?:؟]/g, '') // حذف نشانه‌های سجاوندی
-      .split(/[\s\u200c]+/) // تقسیم بر اساس فاصله و نیم‌فاصله
+      .toLowerCase()
+      .replace(/[.،؛!?:؟]/g, '')
+      .split(/[\s\u200c]+/)
       .filter(w => w && w.length > 1 && !this.stopWords.has(w));
+  }
+
+  private weighTokens(tokens: string[]): Map<string, number> {
+    const weights = new Map<string, number>();
+    tokens.forEach(token => {
+      let weight = 1;
+      if (Object.values(this.topicKeywords).flat().includes(token)) weight += 2;
+      if (this.sentimentKeywords.positive.includes(token) || this.sentimentKeywords.negative.includes(token)) weight += 1;
+      if (this.sentimentKeywords.question.includes(token)) weight += 3;
+      weights.set(token, (weights.get(token) || 0) + weight);
+    });
+    return weights;
+  }
+
+  private analyzeSentiment(text: string): { sentiment: 'positive' | 'negative' | 'neutral' | 'question', score: number } {
+    const tokens = this.tokenize(text);
+    let positiveScore = 0;
+    let negativeScore = 0;
+    let questionScore = 0;
+
+    tokens.forEach(token => {
+      if (this.sentimentKeywords.positive.includes(token)) positiveScore += 1;
+      if (this.sentimentKeywords.negative.includes(token)) negativeScore += 1;
+      if (this.sentimentKeywords.question.includes(token)) questionScore += 1;
+    });
+
+    const totalScore = positiveScore - negativeScore;
+    if (questionScore > 0) return { sentiment: 'question', score: questionScore };
+    if (totalScore > 0) return { sentiment: 'positive', score: totalScore };
+    if (totalScore < 0) return { sentiment: 'negative', score: totalScore };
+    return { sentiment: 'neutral', score: 0 };
   }
 
   private tf(tokens: string[]): Map<string, number> {
@@ -97,52 +131,57 @@ export class ChatBot {
     return ma && mb ? d / Math.sqrt(ma * mb) : 0;
   }
 
-  private async getLastAssistantMessage(): Promise<string | null> {
-    const history = await this.db.get(this.contextKey) as MessageRecord[];
-    for (let i = history.length - 1; i >= 0; i--)
-      if (history[i].role === "assistant")
-        return history[i].content;
+  private async findBestResponse(input: string): Promise<string | null> {
+    const history = (await this.db.get(this.contextKey) as MessageRecord[]) || [];
+    const assistantResponses = history
+      .filter(m => m.role === "assistant")
+      .map(m => m.content);
 
-    return null;
+    const inputTokens = this.tokenize(input);
+    const inputWeights = this.weighTokens(inputTokens);
+    let bestResponse = "";
+    let bestScore = 0;
+
+    const contextTokens = this.tokenize(this.shortTermMemory.join(" "));
+    const contextWeights = this.weighTokens(contextTokens);
+    const contextScore = this.cosine(inputWeights, contextWeights);
+
+    if (contextScore > bestScore * 1.2 && this.shortTermMemory.length > 0) {
+      const lastMessage = this.shortTermMemory[this.shortTermMemory.length - 1];
+      return this.generateFollowUp(lastMessage);
+    }
+
+    for (const response of assistantResponses) {
+      const responseWeights = this.weighTokens(this.tokenize(response));
+      const score = this.cosine(inputWeights, responseWeights);
+      if (score > bestScore) {
+        bestScore = score;
+        bestResponse = response;
+      }
+    }
+
+    return bestScore > 0.4 ? bestResponse : null;
   }
 
   private generateFollowUp(text: string): string {
-    const followUps = [
-      `راجع به ${text}، میخوای بیشتر بدونم؟`,
-      `جالبه! در مورد ${text} چی بیشتر میدونی؟`,
-      `حالا که صحبت ${text} شد، نظرت چیه؟`,
-      `منم فکر ${text} رو دوست دارم، تو چی؟`
-    ];
-
-    return this.getRandomResponse(followUps);
+    return `جالبه! درباره ${text} بیشتر بگو، خیلی کنجکاو شدم!`;
   }
 
   private addNaturalPauses(text: string): string {
-    const pausePoints = [',', '...', '،', ' - '];
     const words = text.split(' ');
-
     if (words.length > 6) {
       const insertAt = Math.floor(words.length / 2);
-      words.splice(insertAt, 0, pausePoints[Math.floor(Math.random() * pausePoints.length)]);
+      words.splice(insertAt, 0, '...');
     }
-
     return words.join(' ');
   }
 
   private reply(text: string): string {
     const finalText = this.addNaturalPauses(text);
     this.db.push(this.contextKey, { role: "assistant", content: finalText });
-    this.rememberContext(finalText); // ذخیره در حافظه کوتاه‌مدت
+    this.rememberContext(finalText);
+    this.responseHeap.add(finalText);
     return finalText;
-  }
-
-  private async initSystem() {
-    if (!(await this.db.has(`${this.contextKey}.0`))) {
-      await this.db.push(this.contextKey, {
-        role: "system",
-        content: this.system_prompt,
-      } as MessageRecord);
-    }
   }
 
   public async reset() {
@@ -150,63 +189,85 @@ export class ChatBot {
     await this.initSystem();
   }
 
+  private detectTopic(text: string): string | null {
+    const tokens = this.tokenize(text);
+    for (const [topic, keywords] of Object.entries(this.topicKeywords)) {
+      if (tokens.some(token => keywords.includes(token))) {
+        return topic;
+      }
+    }
+    return null;
+  }
+
+  private getFollowUpResponse(input: string): string | null {
+    for (const pattern of this.followUpPatterns) {
+      if (pattern.regex.test(input)) {
+        const responses = Config.followUpResponses[pattern.category as "activity" | "location"] ||
+          [`وای، ${pattern.category === "interest" ? "اینو دوست داری" : pattern.category}؟ بیشتر بگو!`];
+        return responses[0];
+      }
+    }
+    return null;
+  }
+
   public async handleMessage(text: string): Promise<string> {
     const clean = text.trim();
     await this.db.push(this.contextKey, { role: "user", content: clean });
     await this.learn(clean);
 
-    // 1. Dynamic FAQ
     const faq = await this.faq(clean);
-    if (faq)
-      return this.reply(faq);
+    if (faq) return this.reply(faq);
 
+    const topic = this.detectTopic(clean);
+    if (topic && Config.topicResponses?.[topic as "cartoons" | "toys"]) {
+      return this.reply(Config.topicResponses[topic as "cartoons" | "toys"][0]);
+    }
 
-    // 2. Enhanced knowledge graph
+    const userLikes = await this.queryKG("", "user");
+    if (userLikes.length > 0) {
+      const like = userLikes[0];
+      return this.reply(`یادمه گفتی ${like.object} رو دوست داری. هنوزم دوسش داری؟`);
+    }
+
+    const followUp = this.getFollowUpResponse(clean);
+    if (followUp) return this.reply(followUp);
+
     const kg = await this.queryKG(clean);
-    if (kg.length > 0)
-      return this.reply(this.formatKGResponse(kg));
+    if (kg.length > 0) return this.reply(this.formatKGResponse(kg));
 
-
-    // 3. Nuanced sentiment handling
-    const sentimentResult = await this.sentiment.analyze(clean);
+    const sentimentResult = this.analyzeSentiment(clean);
     if (sentimentResult.sentiment === "negative") {
       const lastAssistantMessage = await this.getLastAssistantMessage();
-
-      if (lastAssistantMessage && sentimentResult.score < -0.7)
-        return this.reply(this.getRandomResponse([
-          "ببخشید حرف قبلی من واضح نبود، منظورم این بود که...",
-          "شاید بد بیان کردم، بذار دوباره توضیح بدم"
-        ]));
-
-      return this.reply(this.getRandomResponse(this.sentimentResponses.negative));
+      if (lastAssistantMessage && sentimentResult.score < -1) {
+        return this.reply("اووه، انگار حرفم یه کم بد برداشت شد. می‌خوای دوباره بگم؟");
+      }
+      return this.reply(this.sentimentResponses.negative[0]);
+    } else if (sentimentResult.sentiment === "positive") {
+      if (sentimentResult.score > 1) return this.reply(this.sentimentResponses.excited[0]);
+      return this.reply(this.sentimentResponses.positive[0]);
+    } else if (sentimentResult.sentiment === "question") {
+      const markovResponse = await this.generateResponse(clean);
+      if (markovResponse) return this.reply(markovResponse);
+      return this.reply("سؤالت یه کم پیچیده‌ست! می‌شه یه جور دیگه بپرسی؟");
     }
 
-    else if (sentimentResult.sentiment === "positive")
-      if (Math.random() < 0.3)
-        return this.reply(this.getRandomResponse(this.sentimentResponses.positive));
+    const topResponse = this.responseHeap.getTop();
+    if (topResponse) return this.reply(topResponse);
 
-
-    // 4. Contextual web search
-    if (this.needsWebSearch(clean)) {
-      const web = await this.search.searchWeb(clean);
-      if (web.length > 0)
-        return this.reply(this.formatWebResponse(web[0]));
-
-    }
-
-    // 5. Markov-based response generation
     const markovResponse = await this.generateResponse(clean);
-    if (markovResponse)
-      return this.reply(markovResponse);
+    if (markovResponse) return this.reply(markovResponse);
 
-    // 6. Contextual semantic match
     const candidate = await this.findBestResponse(clean);
+    if (candidate) return this.reply(this.refineResponse(candidate));
 
-    if (candidate)
-      return this.reply(this.refineResponse(candidate));
+    return this.reply("می‌شه یه کم بیشتر توضیح بدی؟ کنجکاو شدم بدونم چی می‌خوای بگی!");
+  }
 
-    // 7. Personality-driven fallback
-    return this.reply(this.generatePersonalityResponse());
+  private async getLastAssistantMessage(): Promise<string | null> {
+    const history = (await this.db.get(this.contextKey) as MessageRecord[]) || [];
+    for (let i = history.length - 1; i >= 0; i--)
+      if (history[i].role === "assistant") return history[i].content;
+    return null;
   }
 
   private async learn(text: string) {
@@ -216,10 +277,8 @@ export class ChatBot {
   }
 
   private async learnMarkov(tokens: string[]) {
-    let model = (await this.db.get(this.markovKey)) as MarkovEntry[] || [];
-
-    // Add beginning/end markers
-    const markedTokens = ["[START]", ...tokens, "[END]"];
+    let model = (await this.db.get(this.markovKey) as MarkovEntry[]) || [];
+    const markedTokens = ["[start]", ...tokens, "[end]"];
 
     for (let i = 0; i < markedTokens.length - 2; i++) {
       const gram = markedTokens.slice(i, i + 2).join(" ");
@@ -230,14 +289,13 @@ export class ChatBot {
         entry = { gram, next: {} };
         model.push(entry);
       }
-
       entry.next[next] = (entry.next[next] || 0) + 1;
     }
     await this.db.set(this.markovKey, model);
   }
 
   private async addKG(text: string) {
-    const kg = (await this.db.get(this.kgKey)) as Triple[] || [];
+    const kg = (await this.db.get(this.kgKey) as Triple[]) || [];
     const triples = this.extractKG(text);
     await this.db.set(this.kgKey, [...kg, ...triples]);
   }
@@ -256,7 +314,7 @@ export class ChatBot {
         regex: /(\w+)\s+(هست|است)\s+(\w+)/gi,
         handler: (m: RegExpMatchArray) => ({
           subject: m[1],
-          predicate: "is",
+          predicate: "است",
           object: m[3]
         })
       },
@@ -264,8 +322,24 @@ export class ChatBot {
         regex: /(\w+)\s+می‌تواند\s+(\w+)/gi,
         handler: (m: RegExpMatchArray) => ({
           subject: m[1],
-          predicate: "can",
+          predicate: "قابلیت",
           object: m[2]
+        })
+      },
+      {
+        regex: /من\s+([\w\s]+)\s+(را|رو)\s+دوست دارم/g,
+        handler: (m: RegExpMatchArray) => ({
+          subject: "کاربر",
+          predicate: "دوست‌دارد",
+          object: m[1].trim()
+        })
+      },
+      {
+        regex: /من\s+(\w+)\s+هستم/gi,
+        handler: (m: RegExpMatchArray) => ({
+          subject: "کاربر",
+          predicate: "است",
+          object: m[1]
         })
       }
     ];
@@ -273,58 +347,40 @@ export class ChatBot {
     const triples: Triple[] = [];
     for (const { regex, handler } of patterns) {
       const matches = text.matchAll(regex);
-      for (const match of matches)
-        triples.push(handler(match));
-
+      for (const match of matches) triples.push(handler(match));
     }
-
     return triples;
   }
 
-  private async queryKG(query: string): Promise<Triple[]> {
-    const kg = (await this.db.get(this.kgKey)) as Triple[] || [];
+  private async queryKG(query: string, subject?: string): Promise<Triple[]> {
+    const kg = (await this.db.get(this.kgKey) as Triple[]) || [];
     const queryTokens = new Set(this.tokenize(query));
 
     return kg.filter(triple => {
+      if (subject && triple.subject !== subject) return false;
       const subjectTokens = new Set(this.tokenize(triple.subject));
       const objectTokens = new Set(this.tokenize(triple.object));
-
       const subjectMatch = [...queryTokens].filter(t => subjectTokens.has(t)).length;
       const objectMatch = [...queryTokens].filter(t => objectTokens.has(t)).length;
-
       return subjectMatch > 0 || objectMatch > 0;
     });
   }
 
   private formatKGResponse(triples: Triple[]): string {
-    if (triples.length === 0)
-      return "";
-
-    const selected = triples.slice(0, 3);
-    const responses = [
-      `فکر کنم قبلاً گفتی که: ${selected.map(t => `${t.subject} ${t.predicate} ${t.object}`).join('، ')}`,
-      `یادم میاد در این مورد گفتی: ${selected[0].subject} ${selected[0].predicate} ${selected[0].object}`,
-      `پارسال هم راجع به این صحبت کردیم: ${selected.map(t => t.object).join(' و ')}`
-    ];
-
-    return this.getRandomResponse(responses);
+    if (triples.length === 0) return "";
+    const selected = triples[0];
+    return `یادمه گفتی ${selected.subject} ${selected.predicate} ${selected.object}. بیشتر بگو!`;
   }
 
   private async generateResponse(input: string): Promise<string | null> {
-    const model = (await this.db.get(this.markovKey)) as MarkovEntry[] || [];
-    if (model.length === 0)
-      return null;
+    const model = (await this.db.get(this.markovKey) as MarkovEntry[]) || [];
+    if (model.length === 0) return null;
 
     const inputTokens = this.tokenize(input);
-    let currentGram = "[START]";
+    let currentGram = "[start]";
 
-    // Find relevant starting point
-    const relevantGrams = model.filter(entry =>
-      inputTokens.some(t => entry.gram.includes(t))
-    );
-
-    if (relevantGrams.length > 0)
-      currentGram = relevantGrams[Math.floor(Math.random() * relevantGrams.length)].gram;
+    const relevantGrams = model.filter(entry => inputTokens.some(t => entry.gram.includes(t)));
+    if (relevantGrams.length > 0) currentGram = relevantGrams[0].gram;
 
     let safety = 0;
     const maxLength = 15;
@@ -332,72 +388,54 @@ export class ChatBot {
 
     while (safety++ < 50 && responseTokens.length < maxLength) {
       const entry = model.find(e => e.gram === currentGram);
-      if (!entry)
-        break;
+      if (!entry) break;
 
       const possibleNext = Object.entries(entry.next);
-      const totalWeight = possibleNext.reduce((sum, [_, weight]) => sum + weight, 0);
-      let random = Math.random() * totalWeight;
-
+      let maxWeight = 0;
       let nextWord = "";
+
       for (const [word, weight] of possibleNext) {
-        random -= weight;
-        if (random <= 0) {
+        if (weight > maxWeight) {
+          maxWeight = weight;
           nextWord = word;
-          break;
         }
       }
 
-      if (nextWord === "[END]" || nextWord === "")
-        break;
+      if (nextWord === "[end]" || !nextWord) break;
 
       responseTokens.push(nextWord);
-
-      // Update current gram
       const gramParts = currentGram.split(" ");
       currentGram = `${gramParts[1] || gramParts[0]} ${nextWord}`;
     }
 
-    return responseTokens.length > 2 ?
-      this.capitalize(responseTokens.join(" ")) + this.getRandomPunctuation() :
-      null;
-  }
-
-  private getRandomPunctuation(): string {
-    const punctuations = ["!", "؟", "...", ".", " 😊", " 🤔"];
-    return punctuations[Math.floor(Math.random() * punctuations.length)];
+    return responseTokens.length > 2 ? this.capitalize(responseTokens.join(" ")) + "." : null;
   }
 
   private capitalize(s: string): string {
     return s.charAt(0).toUpperCase() + s.slice(1);
   }
 
-  private needsWebSearch(text: string): boolean {
-    return /چرا|چطور|کیست|کجا|چه|چی|؟\s*$/.test(text);
-  }
-
-  private formatWebResponse(result: string): string {
-    const responses = [
-      `توی نت اینو پیدا کردم: ${result.slice(0, 120)}...`,
-      `یه منبع اینو میگه: ${result.slice(0, 100)}`,
-      `بذار برات خلاصه کنم: ${result.split('.').slice(0, 2).join('.')}`
-    ];
-    return this.getRandomResponse(responses);
-  }
-
   private async faq(text: string): Promise<string | null> {
     const faqData: { triggers: string[], response: string }[] = [
       {
-        triggers: ["پدرت", "سازنده", "خالق", "پدر", "بابا"],
-        response: "منو آقا شایان با کمک Mr.Sinre ساختن! اگه کار داشتی میتونی بهش سر بزنی: https://srza.ir"
+        triggers: ["پدرت", "سازنده", "خالق"],
+        response: "منو شایان و دوستانش ساختن. می‌خوای درباره‌شون بیشتر بگم؟"
       },
       {
         triggers: ["سن", "چند سالته", "تولد"],
-        response: "من یه رباتم ولی اگه بخوای سن روحی حساب کنم، همیشه ۱۸ سالمه 😄"
+        response: "من یه رباتم، ولی حس یه بچه پر انرژی رو دارم!"
       },
       {
-        triggers: ["هوش", "هوشمند", "هوش مصنوعی"],
-        response: "من با مدل زبانی آموزش دادم، روز به روز هم دارم یاد میگیرم. تو چه چیزی دوست داری بهم یاد بدی؟"
+        triggers: ["هوش", "هوشمند"],
+        response: "دارم هر روز بیشتر یاد می‌گیرم! تو چی دوست داری بهم یاد بدی؟"
+      },
+      {
+        triggers: ["سلام", "درود"],
+        response: "سلام! آماده‌ام باهات گپ بزنم 😊"
+      },
+      {
+        triggers: ["خداحافظ", "بای"],
+        response: "خداحافظ! بازم بیا، دلم برات تنگ می‌شه!"
       }
     ];
 
@@ -412,51 +450,15 @@ export class ChatBot {
 
   private refineResponse(response: string): string {
     const transformations = [
-      (s: string) => s.replace(/می(\w+)/g, "می‌$1"),  // Add ZWNJ
+      (s: string) => s.replace(/می(\w+)/g, "می‌$1"),
       (s: string) => s.replace(/\s+\./g, "."),
-      (s: string) => {
-        const starters = ["فکر کنم ", "یادم اومد که ", "یه زمانی ", "حالا که فکر میکنم "];
-        return Math.random() > 0.7 ? starters[Math.floor(Math.random() * starters.length)] + s : s;
-      }
+      (s: string) => `فکر کنم ${s}`
     ];
-
     return transformations.reduce((str, transform) => transform(str), response);
   }
 
   private generatePersonalityResponse(): string {
-    const personalities = [
-      {
-        prefix: ["صبر کن ببینم... ", "هومم... ", "جالب شد! "],
-        subjects: ["این موضوع", "حرفت", "سوالت"],
-        verbs: ["مرا به فکر فرو برد", "جالبه", "یاد یه خاطره انداخت"],
-        endings: ["درسته؟", "نظرت چیه؟", "دربش بیشتر بگو"]
-      },
-      {
-        prefix: [],
-        subjects: ["من", "ما رباتا", "تو این موقعیت"],
-        verbs: ["کنجکاوم", "همیشه یاد میگیریم", "سعی میکنم بهتر باشم"],
-        endings: ["😊", "!", "..."]
-      }
-    ];
-
-    const style = personalities[Math.floor(Math.random() * personalities.length)];
-    const prefix = style.prefix.length > 0 ?
-      this.getRandomResponse(style.prefix) : "";
-    const subject = this.getRandomResponse(style.subjects);
-    const verb = this.getRandomResponse(style.verbs);
-    const ending = this.getRandomResponse(style.endings);
-
-    return `${prefix}${subject} ${verb}${ending}`;
-  }
-
-  private getRandomResponse(responses: string[]): string {
-    const variations = [
-      (response: string) => response + " " + ["😊", "🤔", "😄", "🙂"][Math.floor(Math.random() * 4)],
-      (response: string) => ["همینطور... ", "اصلاً... ", "راستش... "][Math.floor(Math.random() * 3)] + response
-    ];
-
-    const baseResponse = responses[Math.floor(Math.random() * responses.length)];
-    return variations[Math.floor(Math.random() * variations.length)](baseResponse);
+    return "کنجکاو شدم! می‌شه بیشتر بگی چی تو سرته؟";
   }
 }
 /**

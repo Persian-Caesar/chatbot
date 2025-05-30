@@ -1,109 +1,57 @@
 import { Config } from "../config";
 
 export class SentimentAnalyzer {
-    private positiveWords: Set<string> = new Set();
-    private negativeWords: Set<string> = new Set();
-    private intensifiers: Set<string> = new Set();
-    private negationWords: Set<string> = new Set();
-
-    private dictionariesLoaded = false;
+    private positiveWords: Set<string>;
+    private negativeWords: Set<string>;
+    private questionWords: Set<string>;
+    private stopWords: Set<string>;
 
     constructor() {
-        this.positiveWords = new Set(Config.dictionaries.positiveWords);
-        this.negativeWords = new Set(Config.dictionaries.negativeWords);
-        this.intensifiers = new Set(Config.dictionaries.intensifiers);
-        this.negationWords = new Set(Config.dictionaries.negationWords);
-
-        this.dictionariesLoaded = true;
+        this.positiveWords = new Set(Config.dictionaries.positiveWords || []);
+        this.negativeWords = new Set(Config.dictionaries.negativeWords || []);
+        this.questionWords = new Set(Config.dictionaries.questionWords || []);
+        this.stopWords = new Set([
+            "و", "در", "به", "که", "از", "را", "با", "هم", "برای", "این", "آن"
+        ]);
     }
 
-    async analyze(text: string): Promise<{ score: number; sentiment: "positive" | "neutral" | "negative" }> {
-        if (!this.dictionariesLoaded) {
-            await new Promise(resolve => setTimeout(resolve, 100));
-            if (!this.dictionariesLoaded) {
-                console.warn("لغت‌نامه‌ها هنوز بارگذاری نشده‌اند، استفاده از نسخه ساده");
-                return this.simpleAnalyze(text);
-            }
-        }
-
+    async analyze(text: string): Promise<{ score: number; sentiment: "positive" | "negative" | "neutral" | "question" }> {
         const tokens = this.tokenize(text);
-        let score = 0;
-        let negation = false;
-        let intensifier = 1;
-        let lastTokenWasIntensifier = false;
-
-        for (let i = 0; i < tokens.length; i++) {
-            const token = tokens[i];
-
-            // بررسی کلمات نفی
-            if (this.negationWords.has(token)) {
-                negation = true;
-                continue;
-            }
-
-            // بررسی تقویت کننده‌ها
-            if (this.intensifiers.has(token)) {
-                intensifier = 2;
-                lastTokenWasIntensifier = true;
-                continue;
-            }
-
-            // تحلیل کلمات مثبت
-            if (this.positiveWords.has(token)) {
-                const value = negation ? -1 * intensifier : 1 * intensifier;
-                score += value;
-
-                // ریست کردن حالت‌ها
-                negation = false;
-                intensifier = 1;
-                lastTokenWasIntensifier = false;
-            }
-            // تحلیل کلمات منفی
-            else if (this.negativeWords.has(token)) {
-                const value = negation ? 1 * intensifier : -1 * intensifier;
-                score += value;
-
-                // ریست کردن حالت‌ها
-                negation = false;
-                intensifier = 1;
-                lastTokenWasIntensifier = false;
-            }
-            // ریست تقویت کننده در صورت عدم تطابق
-            else if (lastTokenWasIntensifier) {
-                intensifier = 1;
-                lastTokenWasIntensifier = false;
-            }
-        }
-
-        // تشخیص احساس نهایی
-        return {
-            score,
-            sentiment: score > 0 ? "positive" : score < 0 ? "negative" : "neutral"
-        };
-    }
-
-    private simpleAnalyze(text: string): { score: number; sentiment: "positive" | "neutral" | "negative" } {
-        const tokens = this.tokenize(text);
-        let score = 0;
+        let positiveScore = 0;
+        let negativeScore = 0;
+        let questionScore = 0;
 
         tokens.forEach(token => {
-            if (this.positiveWords.has(token)) score++;
-            if (this.negativeWords.has(token)) score--;
+            let weight = 1;
+            // وزن‌دهی به کلمات قوی‌تر
+            if (["عالی", "محشر", "شگفت‌انگیز", "بهترین"].includes(token)) weight = 2;
+            if (["غمگین", "ناراحت", "داغون", "ترسناک"].includes(token)) weight = 2;
+
+            if (this.positiveWords.has(token)) positiveScore += weight;
+            if (this.negativeWords.has(token)) negativeScore += weight;
+            if (this.questionWords.has(token)) questionScore += 1;
         });
 
-        return {
-            score,
-            sentiment: score > 0 ? "positive" : score < 0 ? "negative" : "neutral"
-        };
+        const totalScore = positiveScore - negativeScore;
+
+        if (questionScore > 0) {
+            return { score: questionScore, sentiment: "question" };
+        } else if (totalScore > 0) {
+            return { score: totalScore, sentiment: "positive" };
+        } else if (totalScore < 0) {
+            return { score: totalScore, sentiment: "negative" };
+        } else {
+            return { score: 0, sentiment: "neutral" };
+        }
     }
 
     private tokenize(text: string): string[] {
         return text
             .toLowerCase()
-            .replace(/[^\u0600-\u06FF\s]/g, "")
-            .replace(/[.,!?;:]/g, " ")
+            .replace(/[^\u0600-\u06FF\s]/g, "") // فقط حروف فارسی
+            .replace(/[.,!?;:؟]/g, " ") // حذف علائم نگارشی
             .split(/\s+/)
-            .filter(token => token.length > 1);
+            .filter(token => token.length > 1 && !this.stopWords.has(token));
     }
 }
 /**
