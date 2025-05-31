@@ -13,14 +13,16 @@ export class ChatBot {
   private responseHeap: HeapTree = new HeapTree();
   private userInterests: { [userId: string]: string[] } = {};
   private shortTermMemory: string[] = [];
-  private usedJokes: string[] = []; // حافظه جوک‌های استفاده‌شده
+  private usedJokes: string[] = [];
   private maxMemorySize = 5;
-  private maxJokeMemory = 10; // حداکثر تعداد جوک در حافظه
+  private maxJokeMemory = 10;
   private contextKey: string;
   private markovKey: string;
   private kgKey: string;
   private searchService: SearchService;
   private sentimentAnalyzer: SentimentAnalyzer;
+  private lastTopic: string | null = null; // برای ادامه مکالمه
+  private userName: { [userId: string]: string } = {}; // ذخیره اسم کاربر
 
   private sentimentResponses = Config.sentimentResponses || {
     positive: ["خوشحال می‌شم که اینقدر شادی!", "عالیه، به همین ترتیب ادامه بده!"],
@@ -30,16 +32,22 @@ export class ChatBot {
   private stopWords = new Set<string>([
     "و", "در", "به", "که", "از", "را", "با", "هم", "برای", "این", "آن"
   ]);
-  private negativeWords = new Set<string>(["کسخل", "کسشر", "بی‌شعور", "احمق"]); // کلمات توهین‌آمیز
-  private sensitiveWords = new Set<string>(["سکس", "جنسی", "بزرگسال"]); // کلمات حساس
+  private negativeWords = new Set<string>(["کسخل", "کسشر", "بی‌شعور", "احمق", "کثافت"]);
+  private sensitiveWords = new Set<string>(["سکس", "جنسی", "بزرگسال"]);
   private followUpPatterns = [
     { regex: /من به (\w+) رفتم/, category: "location" },
     { regex: /من (\w+) کردم/, category: "activity" },
-    { regex: /من (\w+) دوست دارم/, category: "interest" }
+    { regex: /من (\w+) دوست دارم/, category: "interest" },
+    {
+      regex: /من (\w+) هستم/, category: "name", handler: (match: RegExpMatchArray, userId?: string) => {
+        if (userId) this.userName[userId] = match[1];
+        return `وای، ${match[1]}! چه اسم باحالی! 😄 حالا چی دوست داری بگیم؟`;
+      }
+    }
   ];
   private forbiddenQuestions = [
     "اسمت چیه", "اسم تو چیه", "تو کی هستی", "اسمت چی هست", "اسم تو چی هست"
-  ]; // سؤال‌های ممنوعه
+  ];
 
   constructor(private db: Database, channelId = "global", private system_prompt = Config.systemPrompt) {
     this.contextKey = `chat:${channelId}`;
@@ -92,16 +100,19 @@ export class ChatBot {
     this.db.push(this.contextKey, { role: "assistant", content: finalText });
     this.rememberContext(finalText);
     this.responseHeap.add(finalText, "ChatBot", this.tokenize(text));
-    if (userId) {
+    if (userId && text) {
       if (!this.userInterests[userId]) this.userInterests[userId] = [];
-      this.userInterests[userId].push(text); // ذخیره علاقه‌مندی‌ها
+      this.userInterests[userId].push(text);
     }
     return finalText;
   }
 
   public async reset() {
     await this.db.delete(this.contextKey);
-    this.usedJokes = []; // ریست حافظه جوک‌ها
+    this.usedJokes = [];
+    this.shortTermMemory = [];
+    this.userName = {};
+    this.lastTopic = null;
     await this.initSystem();
   }
 
@@ -116,9 +127,13 @@ export class ChatBot {
     return null;
   }
 
-  private getFollowUpResponse(input: string): string | null {
+  private getFollowUpResponse(input: string, userId?: string): string | null {
     for (const pattern of this.followUpPatterns) {
-      if (pattern.regex.test(input)) {
+      const match = input.match(pattern.regex);
+      if (match) {
+        if (pattern.handler) {
+          return pattern.handler(match, userId);
+        }
         const responses = Config.followUpResponses?.[pattern.category as "activity" | "location" | "interest"] ||
           [`وای، ${pattern.category === "interest" ? "اینو دوست داری" : pattern.category}؟ بیشتر بگو! 😊`];
         return responses[0];
@@ -148,9 +163,31 @@ export class ChatBot {
       return this.reply("وای، این سؤال یه کم عجیبه! 😅 یه چیز دیگه بپرس!", userId);
     }
 
+    // چک کردن اسم کاربر
+    if (clean.includes("اسم من چیه") && userId && this.userName[userId]) {
+      return this.reply(`اسم تو ${this.userName[userId]}ه! 😄 بازم بگو چی تو سرته؟`, userId);
+    }
+
+    // چک کردن ادامه مکالمه
+    if (this.lastTopic && (clean.includes("اره") || clean.includes("بگو") || clean.includes("بیشتر"))) {
+      if (this.lastTopic === "creator") {
+        this.lastTopic = null;
+        return this.reply("شایان و دوستاش یه تیم باحالن که منو ساختن! کلی کد نوشتن تا من بتونم باهات گپ بزنم. 😎 تو درباره چی دوست داری حرف بزنیم؟", userId);
+      }
+    }
+
     // چک کردن FAQ
     const faq = await this.faq(clean);
-    if (faq) return this.reply(faq, userId);
+    if (faq) {
+      if (clean.includes("کی تورو ساخته") || clean.includes("سازنده")) {
+        this.lastTopic = "creator";
+      }
+      return this.reply(faq, userId);
+    }
+
+    // چک کردن پاسخ‌های دنباله‌دار
+    const followUp = this.getFollowUpResponse(clean, userId);
+    if (followUp) return this.reply(followUp, userId);
 
     // تشخیص موضوع
     const topic = this.detectTopic(clean);
@@ -158,20 +195,14 @@ export class ChatBot {
       return this.reply(Config.topicResponses[topic as keyof typeof Config.topicResponses][0], userId);
     }
 
-    // چک کردن علاقه‌مندی‌های کاربر
-    if (userId && this.userInterests[userId]?.length > 0) {
-      const lastInterest = this.userInterests[userId][this.userInterests[userId].length - 1];
-      return this.reply(`یادمه گفتی ${lastInterest} رو دوست داری. هنوزم دوسش داری؟ 😄`, userId);
-    }
-
-    // پاسخ‌های دنباله‌دار
-    const followUp = this.getFollowUpResponse(clean);
-    if (followUp) return this.reply(followUp, userId);
-
     // چک کردن عبارات مربوط به اسم یا بچه
     if (clean.includes("اسم") || clean.includes("بچه")) {
       return this.reply("هه، بچه؟ من یه چت‌بات باحالم! 😄 اسم تو چیه؟", userId);
     }
+
+    // چک کردن دانش‌نامه
+    const kg = await this.queryKG(clean);
+    if (kg.length > 0) return this.reply(this.formatKGResponse(kg), userId);
 
     // تحلیل احساسات
     const sentimentResult = await this.analyzeSentiment(clean);
@@ -191,10 +222,6 @@ export class ChatBot {
       if (searchResults.length > 0) {
         return this.reply(searchResults[0], userId);
       }
-      const kgResponse = await this.queryKG(clean);
-      if (kgResponse.length > 0) {
-        return this.reply(this.formatKGResponse(kgResponse), userId);
-      }
       const markovResponse = await this.generateResponse(clean);
       if (markovResponse) return this.reply(markovResponse, userId);
       return this.reply(Config.fallbackResponses?.[0] || "سؤالت یه کم پیچیده‌ست! می‌شه یه جور دیگه بپرسی؟ 😅", userId);
@@ -205,10 +232,6 @@ export class ChatBot {
     if (topResponse[0]) return this.reply(topResponse[0], userId);
 
     // تولید پاسخ جدید
-    const kgResponse = await this.queryKG(clean);
-    if (kgResponse.length > 0) {
-      return this.reply(this.formatKGResponse(kgResponse), userId);
-    }
     const markovResponse = await this.generateResponse(clean);
     if (markovResponse) return this.reply(markovResponse, userId);
 
@@ -378,23 +401,25 @@ export class ChatBot {
       .replace(/\s+/g, " ")
       .trim();
 
-    // اضافه کردن عبارات کودکانه با احتمال 30% و فقط یک بار
+    // محدود کردن عبارات کودکانه
     if (Math.random() < 0.3 && Config.dictionaries?.positiveWords?.length > 0) {
       const positiveWord = Config.dictionaries.positiveWords[Math.floor(Math.random() * Config.dictionaries.positiveWords.length)];
-      result = `فکر کنم ${result} وای، این ${positiveWord}ه! 😊`;
-    } else if (Math.random() < 0.3 && Config.dictionaries?.jokes?.length > 0) {
+      result = `${result} وای، این ${positiveWord}ه! 😊`;
+    }
+
+    // محدود کردن جوک‌ها
+    if (Math.random() < 0.2 && Config.dictionaries?.jokes?.length > 0 && this.usedJokes.length < 2) {
       const availableJokes = Config.dictionaries.jokes.filter(joke => !this.usedJokes.includes(joke));
       if (availableJokes.length > 0) {
         const joke = availableJokes[Math.floor(Math.random() * availableJokes.length)];
         this.usedJokes.push(joke);
         if (this.usedJokes.length > this.maxJokeMemory) {
-          this.usedJokes.shift(); // حذف جوک قدیمی
+          this.usedJokes.shift();
         }
         result = `${result} راستی، اینو شنیدی؟ ${joke} 😄`;
       }
     }
 
-    // بزرگ کردن حرف اول
     return result.charAt(0).toUpperCase() + result.slice(1);
   }
 
@@ -410,19 +435,27 @@ export class ChatBot {
       },
       {
         triggers: ["هوش", "هوشمند"],
-        response: "دارم هر روز بیشتر یاد می‌م! تو چی دوست داری بهم یاد بدی؟ 🎓"
+        response: "دارم هر روز بیشتر یاد می‌گیرم! تو چی دوست داری بهم یاد بدی؟ 🎓"
       },
       {
         triggers: Config.dictionaries?.greetingWords || ["سلام"],
         response: "سلام! آماده‌ام باهات گپ بزنم! 😊"
       },
       {
-        triggers: ["خوبی", "حالت خوبه", "حالت چطوره", "چطوره", "خوبه"],
+        triggers: ["خوبی", "حالت خوبه", "حالت چطوره", "چطوره", "خوبه", "حالت"],
         response: "آره، من عالی‌ام! تو چی، حال و خوب؟ 😄"
       },
       {
         triggers: ["چطور", "چطوره حال"],
-        response: "من پرت! تو چطور؟ 😎"
+        response: "من پر انرژی‌ام! تو چطور؟ 😎"
+      },
+      {
+        triggers: ["رباتی", "تو رباتی", "ربات"],
+        response: "هه، آره من یه ربات باحالم! 😎 تو چی، ربات دوست داری یا کارتون؟"
+      },
+      {
+        triggers: ["فکر", "فکر میکنی", "زیاد فکر"],
+        response: "هه، من که همش فکر می‌کنم چطور تو رو شاد کنم! 😄 حالا چی تو سرته؟"
       },
       {
         triggers: Config.dictionaries?.farewellWords || [],
