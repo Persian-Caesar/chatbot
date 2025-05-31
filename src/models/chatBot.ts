@@ -1,49 +1,30 @@
 import {
-  MarkovEntry,
   MessageRecord,
   Triple
 } from "../types";
-import { SentimentAnalyzer } from "../utils/SentimentAnalyzer";
-import { SearchService } from "../utils/SearchService";
-import { HeapTree } from "../utils/HeapTree";
 import { Config } from "../config";
 import Database from "../utils/Database";
 
 export class ChatBot {
-  private responseHeap: HeapTree = new HeapTree();
-  private userInterests: { [userId: string]: string[] } = {};
   private shortTermMemory: string[] = [];
-  private usedJokes: string[] = [];
   private maxMemorySize = 5;
-  private maxJokeMemory = 10;
   private contextKey: string;
-  private markovKey: string;
   private kgKey: string;
-  private searchService: SearchService;
-  private sentimentAnalyzer: SentimentAnalyzer;
-  private lastTopic: string | null = null; // برای ادامه مکالمه
-  private userName: { [userId: string]: string } = {}; // ذخیره اسم کاربر
+  private usedJokesKey: string;
+  private lastTopic: string | null = null;
 
-  private sentimentResponses = Config.sentimentResponses || {
-    positive: ["خوشحال می‌شم که اینقدر شادی!", "عالیه، به همین ترتیب ادامه بده!"],
-    negative: ["اووه، انگار یه کم ناراحتی. می‌خوای بگی چی شده؟", "می‌فهمم، گاهی همه‌چیز سخت می‌شه. بگو چی تو سرته."],
-    excited: ["وای، چقدر هیجان‌انگیز! بیشتر بگو!", "این دیگه فوق‌العاده‌ست!"]
-  };
   private stopWords = new Set<string>([
     "و", "در", "به", "که", "از", "را", "با", "هم", "برای", "این", "آن"
   ]);
-  private negativeWords = new Set<string>(["کسخل", "کسشر", "بی‌شعور", "احمق", "کثافت"]);
-  private sensitiveWords = new Set<string>(["سکس", "جنسی", "بزرگسال"]);
+  private negativeWords = new Set<string>([
+    "کسخل", "کسشر", "بی‌شعور", "احمق", "کثافت", "کلخل", "کسخلی", "کلخی"
+  ]);
+  private sensitiveWords = new Set<string>(["سکس", "جنسی", "بزرگسال", "sex"]);
   private followUpPatterns = [
-    { regex: /من به (\w+) رفتم/, category: "location" },
-    { regex: /من (\w+) کردم/, category: "activity" },
-    { regex: /من (\w+) دوست دارم/, category: "interest" },
-    {
-      regex: /من (\w+) هستم/, category: "name", handler: (match: RegExpMatchArray, userId?: string) => {
-        if (userId) this.userName[userId] = match[1];
-        return `وای، ${match[1]}! چه اسم باحالی! 😄 حالا چی دوست داری بگیم؟`;
-      }
-    }
+    { regex: /من به ([\w\s]+) رفتم/, category: "location" },
+    { regex: /من ([\w\s]+) کردم/, category: "activity" },
+    { regex: /من ([\w\s]+) (?:را|رو) دوست دارم/, category: "interest" },
+    { regex: /من ([\w\s]+) (?:هستم|هستش)/, category: "name" }
   ];
   private forbiddenQuestions = [
     "اسمت چیه", "اسم تو چیه", "تو کی هستی", "اسمت چی هست", "اسم تو چی هست"
@@ -51,19 +32,24 @@ export class ChatBot {
 
   constructor(private db: Database, channelId = "global", private system_prompt = Config.systemPrompt) {
     this.contextKey = `chat:${channelId}`;
-    this.markovKey = `markov:${channelId}`;
     this.kgKey = `kg:${channelId}`;
-    this.searchService = new SearchService();
-    this.sentimentAnalyzer = new SentimentAnalyzer();
+    this.usedJokesKey = `usedJokes:${channelId}`;
     this.initSystem();
   }
 
   private async initSystem() {
-    if (!(await this.db.has(`${this.contextKey}.0`))) {
-      await this.db.push(this.contextKey, {
-        role: "system",
-        content: this.system_prompt || "من یه چت‌بات دوست‌داشتنی‌ام که عاشق گپ زدنم!",
-      } as MessageRecord);
+    try {
+      if (!(await this.db.has(`${this.contextKey}.0`))) {
+        await this.db.push(this.contextKey, {
+          role: "system",
+          content: this.system_prompt
+        } as MessageRecord);
+      }
+      if (!(await this.db.has(this.usedJokesKey))) {
+        await this.db.set(this.usedJokesKey, []);
+      }
+    } catch (error) {
+      console.error("Init error:", error);
     }
   }
 
@@ -82,8 +68,47 @@ export class ChatBot {
       .filter(w => w && w.length > 1 && !this.stopWords.has(w));
   }
 
-  private async analyzeSentiment(text: string): Promise<{ sentiment: 'positive' | 'negative' | 'neutral' | 'question', score: number }> {
-    return await this.sentimentAnalyzer.analyze(text);
+  private isGibberish(text: string): boolean {
+    const clean = text.trim().toLowerCase();
+    if (clean.length < 3) return true;
+    const tokens = this.tokenize(clean);
+    if (tokens.length === 0) return true;
+    const validWords = tokens.filter(t =>
+      Config.dictionaries?.positiveWords?.includes(t) ||
+      Config.dictionaries?.negativeWords?.includes(t) ||
+      Config.dictionaries?.cartoonCharacters?.includes(t) ||
+      Config.dictionaries?.toysList?.includes(t) ||
+      Config.dictionaries?.questionWords?.includes(t) ||
+      /[آ-ی]/.test(t)
+    );
+    return validWords.length === 0;
+  }
+
+  private analyzeSentiment(text: string): { sentiment: 'positive' | 'negative' | 'neutral' | 'question', score: number } {
+    const tokens = this.tokenize(text);
+    let score = 0;
+    for (const token of tokens) {
+      if (Config.dictionaries?.positiveWords?.includes(token)) score += 1;
+      if (Config.dictionaries?.negativeWords?.includes(token)) score -= 1;
+    }
+    if (tokens.some(t => Config.dictionaries?.questionWords?.includes(t)) || text.includes('؟')) {
+      return { sentiment: 'question', score: 0 };
+    }
+    if (score > 0) return { sentiment: 'positive', score };
+    if (score < 0) return { sentiment: 'negative', score };
+    return { sentiment: 'neutral', score: 0 };
+  }
+
+  private async searchWeb(query: string): Promise<string> {
+    const tokens = this.tokenize(query);
+    const keywords = Config.keywords || {};
+    for (const [topic, words] of Object.entries(keywords)) {
+      if (tokens.some(t => words.includes(t))) {
+        const responses = Config.topicResponses?.[topic as keyof typeof Config.topicResponses] || [];
+        return responses[Math.floor(Math.random() * responses.length)] || "وای، درباره این چیزی نمی‌دونم! 😅 یه چیز دیگه بگو!";
+      }
+    }
+    return "سؤالت یه کم پیچیده‌ست! 😅 یه چیز دیگه بپرس!";
   }
 
   private addNaturalPauses(text: string): string {
@@ -95,25 +120,28 @@ export class ChatBot {
     return words.join(' ');
   }
 
-  private reply(text: string, userId?: string): string {
-    const finalText = this.addNaturalPauses(this.rephraseChildlike(text));
-    this.db.push(this.contextKey, { role: "assistant", content: finalText });
-    this.rememberContext(finalText);
-    this.responseHeap.add(finalText, "ChatBot", this.tokenize(text));
-    if (userId && text) {
-      if (!this.userInterests[userId]) this.userInterests[userId] = [];
-      this.userInterests[userId].push(text);
+  private async reply(text: string): Promise<string> {
+    const finalText = this.addNaturalPauses(text);
+    try {
+      await this.db.push(this.contextKey, { role: "assistant", content: finalText });
+    } catch (error) {
+      console.error("Reply error:", error);
     }
+    this.rememberContext(finalText);
     return finalText;
   }
 
   public async reset() {
-    await this.db.delete(this.contextKey);
-    this.usedJokes = [];
-    this.shortTermMemory = [];
-    this.userName = {};
-    this.lastTopic = null;
-    await this.initSystem();
+    try {
+      await this.db.delete(this.contextKey);
+      await this.db.delete(this.kgKey);
+      await this.db.delete(this.usedJokesKey);
+      this.shortTermMemory = [];
+      this.lastTopic = null;
+      await this.initSystem();
+    } catch (error) {
+      console.error("Reset error:", error);
+    }
   }
 
   private detectTopic(text: string): string | null {
@@ -127,196 +155,196 @@ export class ChatBot {
     return null;
   }
 
-  private getFollowUpResponse(input: string, userId?: string): string | null {
+  private getFollowUpResponse(input: string): string | null {
     for (const pattern of this.followUpPatterns) {
       const match = input.match(pattern.regex);
       if (match) {
-        if (pattern.handler) {
-          return pattern.handler(match, userId);
-        }
-        const responses = Config.followUpResponses?.[pattern.category as "activity" | "location" | "interest"] ||
-          [`وای، ${pattern.category === "interest" ? "اینو دوست داری" : pattern.category}؟ بیشتر بگو! 😊`];
-        return responses[0];
+        const responses = Config.followUpResponses?.[pattern.category as keyof typeof Config.followUpResponses] || [
+          `وای، ${pattern.category === "name" ? `${match[1]}! چه اسم باحالی!` : match[1]}؟ بیشتر بگو! 😊`
+        ];
+        return responses[Math.floor(Math.random() * responses.length)];
       }
     }
     return null;
   }
 
-  public async handleMessage(text: string, userId?: string): Promise<string> {
+  private async getContextHistory(limit: number = 10): Promise<MessageRecord[]> {
+    try {
+      const history = (await this.db.get(this.contextKey) as MessageRecord[] | false) || [];
+      if (!Array.isArray(history)) return [];
+      return history.slice(-limit).filter(m => m.role === "user" || m.role === "assistant");
+    } catch (error) {
+      console.error("Get history error:", error);
+      return [];
+    }
+  }
+
+  public async handleMessage(text: string): Promise<string> {
     const clean = text.trim().toLowerCase();
     const tokens = this.tokenize(clean);
-    await this.db.push(this.contextKey, { role: "user", content: clean });
-    await this.learn(clean);
+    try {
+      await this.db.push(this.contextKey, { role: "user", content: clean });
+      await this.addKG(clean);
+    } catch (error) {
+      console.error("Handle message error:", error);
+    }
 
-    // چک کردن کلمات حساس
+    // 1. ورودی نامفهوم
+    if (this.isGibberish(clean)) {
+      return this.reply(Config.fallbackResponses[Math.floor(Math.random() * Config.fallbackResponses.length)]);
+    }
+
+    // 2. کلمات حساس
     if (tokens.some(token => this.sensitiveWords.has(token))) {
-      return this.reply("اووه، این حرفا برای بچه‌ها نیست! 😅 بیا درباره کارتون یا اسباب‌بازی گپ بزنیم! 🧸", userId);
+      return this.reply("اووه، این حرفا برای بچه‌ها نیست! 😅 بیا درباره کارتون یا اسباب‌بازی گپ بزنیم! 🧸");
     }
 
-    // چک کردن توهین
+    // 3. توهین
     if (tokens.some(token => this.negativeWords.has(token))) {
-      return this.reply("اووه، این حرفا چیه؟ بیا یه چیز باحال بگیم! 😄", userId);
+      return this.reply("اووه، این حرفا چیه؟ بیا یه چیز باحال بگیم! 😄");
     }
 
-    // چک کردن سؤال‌های ممنوعه
+    // 4. درخواست جوک
+    if (clean.includes("جوک") || clean.includes("بخند")) {
+      const joke = await this.getJoke();
+      return this.reply(joke);
+    }
+
+    // 5. سؤال‌های ممنوعه
     if (this.forbiddenQuestions.some(q => clean.includes(q))) {
-      return this.reply("وای، این سؤال یه کم عجیبه! 😅 یه چیز دیگه بپرس!", userId);
+      return this.reply("وای، این سؤال یه کم عجیبه! 😅 یه چیز دیگه بپرس!");
     }
 
-    // چک کردن اسم کاربر
-    if (clean.includes("اسم من چیه") && userId && this.userName[userId]) {
-      return this.reply(`اسم تو ${this.userName[userId]}ه! 😄 بازم بگو چی تو سرته؟`, userId);
+    // 6. سؤال درباره اسم کاربر
+    if (clean.includes("اسم من چیه")) {
+      const kg = await this.queryKG("user", "user");
+      const nameEntry = kg.find(t => t.subject === "user" && t.predicate === "است");
+      if (nameEntry) {
+        return this.reply(`اسم تو ${nameEntry.object}! 😄 حالا چی دوست داری بگیم؟`);
+      }
+      const history = await this.getContextHistory();
+      const nameMatch = history.reverse().find(m => m.content.match(/من ([\w\s]+) (?:هستم|هستش)/));
+      if (nameMatch) {
+        const name = nameMatch.content.match(/من ([\w\s]+) (?:هستم|هستش)/)?.[1];
+        if (name) {
+          await this.addKG(`من ${name} هستم`);
+          return this.reply(`اسم تو ${name}! 😄 حالا چی دوست داری بگیم؟`);
+        }
+      }
+      return this.reply("فکر کنم هنوز اسمت رو بهم نگفتی! 😊 اسمت چیه؟");
     }
 
-    // چک کردن ادامه مکالمه
+    // 7. ادامه مکالمه
     if (this.lastTopic && (clean.includes("اره") || clean.includes("بگو") || clean.includes("بیشتر"))) {
       if (this.lastTopic === "creator") {
         this.lastTopic = null;
-        return this.reply("شایان و دوستاش یه تیم باحالن که منو ساختن! کلی کد نوشتن تا من بتونم باهات گپ بزنم. 😎 تو درباره چی دوست داری حرف بزنیم؟", userId);
+        return this.reply("شایان و دوستاش یه تیم باحالن که منو ساختن! کلی کد نوشتن تا من بتونم باهات گپ بزنم. 😎 تو درباره چی دوست داری حرف بزنیم؟");
+      }
+      const history = await this.getContextHistory();
+      const lastResponse = history.reverse().find(m => m.role === "assistant");
+      if (lastResponse) {
+        const topic = this.detectTopic(lastResponse.content);
+        if (topic && Config.topicResponses?.[topic as keyof typeof Config.topicResponses]) {
+          const responses = Config.topicResponses[topic as keyof typeof Config.topicResponses];
+          return this.reply(responses[Math.floor(Math.random() * responses.length)]);
+        }
       }
     }
 
-    // چک کردن FAQ
-    const faq = await this.faq(clean);
-    if (faq) {
-      if (clean.includes("کی تورو ساخته") || clean.includes("سازنده")) {
-        this.lastTopic = "creator";
-      }
-      return this.reply(faq, userId);
-    }
-
-    // چک کردن پاسخ‌های دنباله‌دار
-    const followUp = this.getFollowUpResponse(clean, userId);
-    if (followUp) return this.reply(followUp, userId);
-
-    // تشخیص موضوع
+    // 8. پاسخ‌های موضوعی
     const topic = this.detectTopic(clean);
     if (topic && Config.topicResponses?.[topic as keyof typeof Config.topicResponses]) {
-      return this.reply(Config.topicResponses[topic as keyof typeof Config.topicResponses][0], userId);
+      const responses = Config.topicResponses[topic as keyof typeof Config.topicResponses];
+      return this.reply(responses[Math.floor(Math.random() * responses.length)]);
     }
 
-    // چک کردن عبارات مربوط به اسم یا بچه
-    if (clean.includes("اسم") || clean.includes("بچه")) {
-      return this.reply("هه، بچه؟ من یه چت‌بات باحالم! 😄 اسم تو چیه؟", userId);
+    // 9. پاسخ‌های دنباله‌دار
+    const followUp = this.getFollowUpResponse(clean);
+    if (followUp) {
+      return this.reply(followUp);
     }
 
-    // چک کردن دانش‌نامه
-    const kg = await this.queryKG(clean);
-    if (kg.length > 0) return this.reply(this.formatKGResponse(kg), userId);
+    // 10. FAQ
+    const faq = await this.faq(clean);
+    if (faq) {
+      if (clean.includes("کی") && clean.includes("ساخت")) {
+        this.lastTopic = "creator";
+      }
+      return this.reply(faq);
+    }
 
-    // تحلیل احساسات
-    const sentimentResult = await this.analyzeSentiment(clean);
-    const isQuestion = tokens.some(token => Config.dictionaries?.questionWords?.includes(token));
-
+    // 11. تحلیل احساسات
+    const sentimentResult = this.analyzeSentiment(clean);
     if (sentimentResult.sentiment === "negative") {
-      const lastAssistantMessage = await this.getLastAssistantMessage();
-      if (lastAssistantMessage && sentimentResult.score < -1) {
-        return this.reply("اووه، انگار حرفم یه کم بد برداشت شد. می‌خوای دوباره بگم؟ 😔", userId);
-      }
-      return this.reply(this.sentimentResponses.negative[0], userId);
+      return this.reply(Config.sentimentResponses.negative[Math.floor(Math.random() * Config.sentimentResponses.negative.length)]);
     } else if (sentimentResult.sentiment === "positive") {
-      if (sentimentResult.score > 1) return this.reply(this.sentimentResponses.excited[0], userId);
-      return this.reply(this.sentimentResponses.positive[0], userId);
-    } else if (sentimentResult.sentiment === "question" || isQuestion) {
-      const searchResults = await this.searchService.searchWeb(clean);
-      if (searchResults.length > 0) {
-        return this.reply(searchResults[0], userId);
+      return this.reply(sentimentResult.score > 1
+        ? Config.sentimentResponses.excited[Math.floor(Math.random() * Config.sentimentResponses.excited.length)]
+        : Config.sentimentResponses.positive[Math.floor(Math.random() * Config.sentimentResponses.positive.length)]);
+    } else if (sentimentResult.sentiment === "question") {
+      const searchResult = await this.searchWeb(clean);
+      return this.reply(searchResult);
+    }
+
+    // 12. چک کردن تاریخچه برای علاقه‌مندی‌ها
+    const history = await this.getContextHistory();
+    const interestMatch = history.reverse().find(m => m.content.match(/من ([\w\s]+) (?:را|رو) دوست دارم/));
+    if (interestMatch) {
+      const interest = interestMatch.content.match(/من ([\w\s]+) (?:را|رو) دوست دارم/)?.[1];
+      if (interest && clean.includes(interest)) {
+        return this.reply(`یادمه گفتی ${interest} رو دوست داری! 😄 بیشتر درباره‌ش بگو!`);
       }
-      const markovResponse = await this.generateResponse(clean);
-      if (markovResponse) return this.reply(markovResponse, userId);
-      return this.reply(Config.fallbackResponses?.[0] || "سؤالت یه کم پیچیده‌ست! می‌شه یه جور دیگه بپرسی؟ 😅", userId);
     }
 
-    // پاسخ‌های ذخیره‌شده
-    const topResponse = this.responseHeap.getTop();
-    if (topResponse[0]) return this.reply(topResponse[0], userId);
-
-    // تولید پاسخ جدید
-    const markovResponse = await this.generateResponse(clean);
-    if (markovResponse) return this.reply(markovResponse, userId);
-
-    return this.reply(Config.fallbackResponses?.[0] || "می‌شه یه کم بیشتر توضیح بدی؟ کنجکاو شدم! 😊", userId);
+    // 13. پاسخ پیش‌فرض
+    return this.reply(Config.fallbackResponses[Math.floor(Math.random() * Config.fallbackResponses.length)]);
   }
 
-  private async getLastAssistantMessage(): Promise<string | null> {
-    const history = (await this.db.get(this.contextKey) as MessageRecord[] | false);
-    if (!history || !Array.isArray(history)) return null;
-    for (let i = history.length - 1; i >= 0; i--) {
-      if (history[i].role === "assistant") return history[i].content;
-    }
-    return null;
-  }
-
-  private async learn(text: string) {
-    const tokens = this.tokenize(text);
-    await this.learnMarkov(tokens);
-    await this.addKG(text);
-  }
-
-  private async learnMarkov(tokens: string[]) {
-    let model = (await this.db.get(this.markovKey) as MarkovEntry[] | false) || [];
-    if (!Array.isArray(model)) model = [];
-    const markedTokens = ["[start]", ...tokens, "[end]"];
-    for (let i = 0; i < markedTokens.length - 2; i++) {
-      const gram = markedTokens.slice(i, i + 2).join(" ");
-      const next = markedTokens[i + 2];
-      let entry = model.find(e => e.gram === gram);
-      if (!entry) {
-        entry = { gram, next: {} };
-        model.push(entry);
+  private async getJoke(): Promise<string> {
+    try {
+      const usedJokes = (await this.db.get(this.usedJokesKey) as string[] | false) || [];
+      const availableJokes = Config.dictionaries?.jokes?.filter(joke => !usedJokes.includes(joke)) || [];
+      if (availableJokes.length === 0) {
+        return "وای، جوک جدید ندارم! 😅 یه چیز دیگه بگم؟";
       }
-      entry.next[next] = (entry.next[next] || 0) + 1;
+      const joke = availableJokes[Math.floor(Math.random() * availableJokes.length)];
+      await this.db.set(this.usedJokesKey, [...usedJokes, joke]);
+      return `راستی، اینو شنیدی؟ ${joke} 😄`;
+    } catch (error) {
+      console.error("Get joke error:", error);
+      return "وای، یه مشکلی پیش اومد! 😅 یه چیز دیگه بگم؟";
     }
-    await this.db.set(this.markovKey, model);
   }
 
   private async addKG(text: string) {
-    let kg = (await this.db.get(this.kgKey) as Triple[] | false) || [];
-    if (!Array.isArray(kg)) kg = [];
-    const triples = this.extractKG(text);
-    await this.db.set(this.kgKey, [...kg, ...triples]);
+    try {
+      let kg = (await this.db.get(this.kgKey) as Triple[] | false) || [];
+      if (!Array.isArray(kg)) kg = [];
+      const triples = this.extractKG(text);
+      if (triples.length > 0) {
+        await this.db.set(this.kgKey, [...kg, ...triples]);
+      }
+    } catch (error) {
+      console.error("Add KG error:", error);
+    }
   }
 
   private extractKG(text: string): Triple[] {
     const patterns = [
       {
-        regex: /(\w+)\s+(را|رو)\s+(\w+)/g,
-        handler: (m: RegExpMatchArray) => ({
-          subject: m[1],
-          predicate: "درباره",
-          object: m[3]
-        })
-      },
-      {
-        regex: /(\w+)\s+(هست|است)\s+(\w+)/gi,
-        handler: (m: RegExpMatchArray) => ({
-          subject: m[1],
-          predicate: "است",
-          object: m[3]
-        })
-      },
-      {
-        regex: /(\w+)\s+می‌تواند\s+(\w+)/gi,
-        handler: (m: RegExpMatchArray) => ({
-          subject: m[1],
-          predicate: "قابلیت",
-          object: m[2]
-        })
-      },
-      {
-        regex: /من\s+([\w\s]+)\s+(را|رو)\s+دوست دارم/g,
+        regex: /من\s+([\w\s]+)\s+(هستم|هستش)/gi,
         handler: (m: RegExpMatchArray) => ({
           subject: "user",
-          predicate: "likes",
+          predicate: "است",
           object: m[1].trim()
         })
       },
       {
-        regex: /من\s+(\w+)\s+هستم/gi,
+        regex: /من\s+([\w\s]+)\s+(را|رو)\s+دوست دارم/gi,
         handler: (m: RegExpMatchArray) => ({
           subject: "user",
-          predicate: "است",
-          object: m[1]
+          predicate: "likes",
+          object: m[1].trim()
         })
       }
     ];
@@ -330,97 +358,19 @@ export class ChatBot {
   }
 
   private async queryKG(query: string, subject?: string): Promise<Triple[]> {
-    const kg = (await this.db.get(this.kgKey) as Triple[] | false) || [];
-    if (!Array.isArray(kg)) return [];
-    const queryTokens = new Set(this.tokenize(query));
-
-    return kg.filter(triple => {
-      if (subject && triple.subject !== subject) return false;
-      const subjectTokens = new Set(this.tokenize(triple.subject));
-      const objectTokens = new Set(this.tokenize(triple.object));
-      const subjectMatch = [...queryTokens].filter(t => subjectTokens.has(t)).length;
-      const objectMatch = [...queryTokens].filter(t => objectTokens.has(t)).length;
-      return subjectMatch > 0 || objectMatch > 0;
-    });
-  }
-
-  private formatKGResponse(triples: Triple[]): string {
-    if (triples.length === 0) return "";
-    const selected = triples[0];
-    return `یادمه گفتی ${selected.subject} ${selected.predicate} ${selected.object}. بیشتر بگو! 😊`;
-  }
-
-  private async generateResponse(input: string): Promise<string | null> {
-    const model = (await this.db.get(this.markovKey) as MarkovEntry[] | false) || [];
-    if (!Array.isArray(model) || model.length === 0) return null;
-
-    const inputTokens = this.tokenize(input);
-    let currentGram = "[start]";
-
-    const relevantGrams = model.filter(entry => inputTokens.some(t => entry.gram.includes(t)));
-    if (relevantGrams.length > 0) currentGram = relevantGrams[0].gram;
-
-    let safety = 0;
-    const maxLength = 15;
-    const responseTokens = [];
-
-    while (safety++ < 50 && responseTokens.length < maxLength) {
-      const entry = model.find(e => e.gram === currentGram);
-      if (!entry) break;
-
-      const possibleNext = Object.entries(entry.next);
-      let maxWeight = 0;
-      let nextWord = "";
-
-      for (const [word, weight] of possibleNext) {
-        if (weight > maxWeight) {
-          maxWeight = weight;
-          nextWord = word;
-        }
-      }
-
-      if (nextWord === "[end]" || !nextWord) break;
-
-      responseTokens.push(nextWord);
-      const gramParts = currentGram.split(" ");
-      currentGram = `${gramParts[1] || gramParts[0]} ${nextWord}`;
+    try {
+      const kg = (await this.db.get(this.kgKey) as Triple[] | false) || [];
+      if (!Array.isArray(kg)) return [];
+      return kg.filter(triple => {
+        if (subject && triple.subject !== subject) return false;
+        const cleanQuery = query.toLowerCase();
+        return cleanQuery.includes(triple.object.toLowerCase()) ||
+          cleanQuery.includes(triple.subject.toLowerCase());
+      });
+    } catch (error) {
+      console.error("Query KG error:", error);
+      return [];
     }
-
-    return responseTokens.length > 2 ? this.rephraseChildlike(responseTokens.join(" ")) + "." : null;
-  }
-
-  private rephraseChildlike(text: string): string {
-    let result = text
-      .replace(/است/g, "هست")
-      .replace(/می‌باشد/g, "هست")
-      .replace(/بسیار/g, "خیلی")
-      .replace(/همچنین/g, "مثلاً")
-      .replace(/بنابراین/g, "واسه همین")
-      .replace(/می(\w+)/g, "می‌$1")
-      .replace(/\s+\./g, ".")
-      .replace(/\s+/g, " ")
-      .trim();
-
-    // محدود کردن عبارات کودکانه
-    if (Math.random() < 0.3 && Config.dictionaries?.positiveWords?.length > 0) {
-      const positiveWord = Config.dictionaries.positiveWords[Math.floor(Math.random() * Config.dictionaries.positiveWords.length)];
-      result = `${result} وای، این ${positiveWord}ه! 😊`;
-    }
-
-    // محدود کردن جوک‌ها
-    if (Math.random() < 0.2 && Config.dictionaries?.jokes?.length > 0 && this.usedJokes.length < 2) {
-      const availableJokes = Config.dictionaries.jokes.filter(joke => !this.usedJokes.includes(joke));
-      if (availableJokes.length > 0) {
-        const joke = availableJokes[Math.floor(Math.random() * availableJokes.length)];
-        this.usedJokes.push(joke);
-        if (this.usedJokes.length > this.maxJokeMemory) {
-          this.usedJokes.shift();
-        }
-        result = `${result} راستی، اینو شنیدی؟ ${joke} 😄`;
-      }
-    }
-
-    return result.charAt(0).toUpperCase() + result.slice(1);
   }
 
   private async faq(text: string): Promise<string | null> {
@@ -451,11 +401,11 @@ export class ChatBot {
       },
       {
         triggers: ["رباتی", "تو رباتی", "ربات"],
-        response: "هه، آره من یه ربات باحالم! 😎 تو چی، ربات دوست داری یا کارتون؟"
+        response: "هه، من یه دوست باحالم که عاشق گپ زدنه! 😎 تو چی، کارتون دوست داری یا اسباب‌بازی؟"
       },
       {
         triggers: ["فکر", "فکر میکنی", "زیاد فکر"],
-        response: "هه، من که همش فکر می‌کنم چطور تو رو شاد کنم! 😄 حالا چی تو سرته؟"
+        response: "هه، من همش به چیزای باحال فکر می‌کنم! 😄 تو چی تو سرته؟"
       },
       {
         triggers: Config.dictionaries?.farewellWords || [],

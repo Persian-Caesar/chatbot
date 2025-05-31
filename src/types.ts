@@ -1,8 +1,7 @@
-export type MessageRecord = {
+export interface MessageRecord {
     role: "system" | "user" | "assistant";
     content: string;
-};
-
+}
 export interface Triple {
     subject: string;
     predicate: string;

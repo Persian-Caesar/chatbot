@@ -1,247 +1,89 @@
-import { Config } from "../config";
-
 export class SearchService {
-    private readonly SERP_API_KEY = process.env.SERP_API_KEY || "";
-    private readonly WIKI_API = "https://fa.wikipedia.org/w/api.php";
-    private positiveWords: Set<string>;
-    private negativeWords: Set<string>;
-    private questionWords: Set<string>;
-    private cartoonCharacters: Set<string>;
-    private toysList: Set<string>;
-    private stopWords: Set<string>;
-
-    constructor() {
-        if (!this.SERP_API_KEY) {
-            console.warn("کلید SerpAPI تنظیم نشده! جستجوی وب محدود خواهد بود.");
-        }
-        this.positiveWords = new Set(Config.dictionaries.positiveWords || []);
-        this.negativeWords = new Set(Config.dictionaries.negativeWords || []);
-        this.questionWords = new Set(Config.dictionaries.questionWords || []);
-        this.cartoonCharacters = new Set(Config.dictionaries.cartoonCharacters || []);
-        this.toysList = new Set(Config.dictionaries.toysList || []);
-        this.stopWords = new Set([
-            "و", "در", "به", "که", "از", "را", "با", "هم", "برای", "این", "آن"
-        ]);
-    }
-
+    /**
+     * Searches the web for a query and returns simplified, child-friendly results.
+     * Uses Google search and parses results with regex to avoid external dependencies.
+     * @param query The search query provided by the user.
+     * @returns A promise resolving to an array of child-friendly search results.
+     */
     async searchWeb(query: string): Promise<string[]> {
         try {
-            const tokens = this.tokenize(query);
-            const results: string[] = [];
+            // Encode the query for URL
+            const encodedQuery = encodeURIComponent(query.trim());
+            const url = `https://www.google.com/search?q=${encodedQuery}&hl=fa`; // Persian language results
 
-            // تشخیص سؤال
-            const isQuestion = tokens.some(token => this.questionWords.has(token));
-
-            // برای سؤال‌های کوتاه یا خاص، مستقیم به پاسخ محلی برو
-            if (tokens.length < 3 || query.toLowerCase().includes("اسمت چیه")) {
-                const localResults = this.searchLocal(tokens);
-                if (localResults.length > 0) {
-                    return localResults;
+            // Fetch the search results
+            const response = await fetch(url, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
                 }
-                return [this.getFallbackResponse()];
-            }
-
-            // جستجو در SerpAPI (گوگل)
-            const serpResults = await this.searchSerpAPI(query);
-            if (serpResults.length > 0) {
-                results.push(...this.formatResults(serpResults, isQuestion, tokens, "SerpAPI"));
-            }
-
-            // جستجو در ویکی‌پدیا
-            const wikiResults = await this.searchWikipedia(query);
-            if (wikiResults.length > 0) {
-                results.push(...this.formatResults(wikiResults, isQuestion, tokens, "Wikipedia"));
-            }
-
-            // اضافه کردن پاسخ‌های محلی از Config
-            const localResults = this.searchLocal(tokens);
-            if (localResults.length > 0) {
-                results.push(...localResults);
-            }
-
-            // اضافه کردن جوک یا معما برای جذابیت
-            if (isQuestion && Math.random() < 0.3) {
-                const extra = this.getJokeOrMystery();
-                if (extra) results.push(extra);
-            }
-
-            // اگر هیچ نتیجه‌ای نبود
-            if (results.length === 0) {
-                results.push(this.getFallbackResponse());
-            }
-
-            // حذف نتایج تکراری و کوتاه
-            return [...new Set(results)]
-                .filter(text => text && text.length > 10)
-                .slice(0, 5);
-        } catch (error) {
-            console.error("خطا در جستجوی وب:", error);
-            return [this.getFallbackResponse()];
-        }
-    }
-
-    private async searchSerpAPI(query: string): Promise<{ text: string; url: string }[]> {
-        if (!this.SERP_API_KEY) return [];
-
-        try {
-            const params = new URLSearchParams({
-                q: `${query} کودکانه کارتون`, // فیلتر قوی‌تر کودکانه
-                api_key: this.SERP_API_KEY,
-                hl: "fa",
-                gl: "ir",
-                num: "5"
             });
-            const res = await fetch(`https://serpapi.com/search?${params}`);
-            if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-            const data = await res.json();
 
-            const results: { text: string; url: string }[] = [];
-            if (data.organic_results) {
-                for (const item of data.organic_results) {
-                    if (item.snippet && item.link) {
-                        results.push({ text: item.snippet, url: item.link });
-                    }
+            if (!response.ok) {
+                console.error(`Search failed with status: ${response.status}`);
+                return ['وای، یه مشکلی پیش اومد! 😅 یه چیز دیگه بپرس!'];
+            }
+
+            const html = await response.text();
+
+            // Simple regex to extract snippets from Google results
+            // Matches divs containing search result snippets
+            const snippetRegex = /<div[^>]*class="[^"]*VwiC3b[^"]*"[^>]*>(.*?)(?:<\/div>|$)/gis;
+            const snippets: string[] = [];
+            let match;
+
+            while ((match = snippetRegex.exec(html)) !== null && snippets.length < 3) {
+                let snippet = match[1]
+                    .replace(/<[^>]+>/g, '') // Remove HTML tags
+                    .replace(/&[^;]+;/g, '') // Remove HTML entities
+                    .trim();
+
+                if (snippet && snippet.length > 20) {
+                    // Simplify and make it child-friendly
+                    snippet = this.makeChildFriendly(snippet);
+                    if (snippet) snippets.push(snippet);
                 }
             }
-            return results;
+
+            if (snippets.length === 0) {
+                return ['وای، درباره این چیزی پیدا نکردم! 😅 یه سؤال دیگه بپرس!'];
+            }
+
+            return snippets.map(s => `راستی، اینو پیدا کردم! ${s} 😄 بیشتر بگو ببینم چی می‌خوای!`);
         } catch (error) {
-            console.error("خطا در جستجوی SerpAPI:", error);
-            return [];
+            console.error('Search error:', error);
+            return ['وای، یه مشکلی پیش اومد! 😅 یه چیز دیگه بپرس!'];
         }
     }
 
-    private async searchWikipedia(query: string): Promise<{ text: string; url: string }[]> {
-        try {
-            const params = new URLSearchParams({
-                action: "query",
-                list: "search",
-                srsearch: `${query} کودکانه`, // فیلتر کودکانه
-                format: "json",
-                utf8: "",
-                srlimit: "3"
-            });
-            const res = await fetch(`${this.WIKI_API}?${params}`);
-            if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-            const data = await res.json();
-
-            const results: { text: string; url: string }[] = [];
-            if (data.query?.search) {
-                for (const item of data.query.search) {
-                    if (item.snippet) {
-                        const cleanText = this.cleanSnippet(item.snippet);
-                        const url = `https://fa.wikipedia.org/wiki/${encodeURIComponent(item.title)}`;
-                        results.push({ text: cleanText, url });
-                    }
-                }
-            }
-            return results;
-        } catch (error) {
-            console.error("خطا در جستجوی ویکی‌پدیا:", error);
-            return [];
+    /**
+     * Converts a text snippet into a child-friendly version.
+     * Simplifies language, removes complex terms, and ensures tone matches an 8-year-old's style.
+     * @param text The text to convert.
+     * @returns A child-friendly version of the text, or empty string if unsuitable.
+     */
+    private makeChildFriendly(text: string): string {
+        // Basic stop words to avoid complex or unsuitable content
+        const stopWords = ['دانلود', 'خرید', 'فروش', 'قیمت', 'بزرگسال', '18+', 'رایگان'];
+        if (stopWords.some(word => text.toLowerCase().includes(word))) {
+            return '';
         }
-    }
 
-    private searchLocal(tokens: string[]): string[] {
-        const results: string[] = [];
-        if (!Config.keywords) return results;
-        for (const [topic, keywords] of Object.entries(Config.keywords)) {
-            if (tokens.some(token => keywords.includes(token))) {
-                const responses = Config.topicResponses?.[topic as keyof typeof Config.topicResponses] || [];
-                if (responses.length > 0) {
-                    results.push(responses[0]);
-                }
-            }
-        }
-        for (const token of tokens) {
-            if (this.cartoonCharacters.has(token)) {
-                results.push(`وای، ${token} خیلی باحاله! تو کدوم کارتونشو دوست داری؟ 😄`);
-            } else if (this.toysList.has(token)) {
-                results.push(`اووه، ${token} خیلی خوبه! باهاش چی بازی می‌کنی؟ 🧸`);
-            }
-        }
-        return results;
-    }
-
-    private formatResults(items: { text: string; url: string }[], isQuestion: boolean, tokens: string[], source: string): string[] {
-        const results: string[] = [];
-        const positiveCount = tokens.filter(t => this.positiveWords.has(t)).length;
-        const negativeCount = tokens.filter(t => this.negativeWords.has(t)).length;
-        const childFriendlyScore = tokens.filter(t => this.cartoonCharacters.has(t) || this.toysList.has(t)).length;
-
-        for (const item of items) {
-            // فیلتر نتایج نامرتبط
-            if (item.text.includes("مرگ") || item.text.includes("زندانی") || item.text.includes("جنگ")) {
-                continue; // حذف نتایج نامناسب
-            }
-
-            let response = isQuestion ? "وای، یه چیز باحال پیدا کردم! 😊 " : "هورا! اینو نگاه کن! 🎉 ";
-            response += this.rephraseChildlike(item.text);
-            response += ` اگه دوست داشتی بیشتر بخونی، اینجا برو: ${item.url}`;
-
-            if (positiveCount > negativeCount) {
-                response += " این خیلی شاد و خوبه! 😄";
-            } else if (negativeCount > positiveCount) {
-                response += " اووه، یه کم غمگینه... بیا یه چیز شاد پیدا کنیم! 😔";
-            }
-
-            if (childFriendlyScore > 0) {
-                response += " این خیلی برای بچه‌ها باحاله! 🧸";
-            }
-
-            results.push(response);
-        }
-        return results;
-    }
-
-    private rephraseChildlike(text: string): string {
-        let result = text
-            .replace(/است/g, "هست")
-            .replace(/می‌باشد/g, "هست")
-            .replace(/بسیار/g, "خیلی")
-            .replace(/همچنین/g, "مثلاً")
-            .replace(/بنابراین/g, "واسه همین")
-            .replace(/\s+/g, " ")
+        // Simplify the text
+        let simplified = text
+            .replace(/\b(?:است|هستند|می‌باشد|می‌شوند)\b/g, 'هست') // Normalize verbs
+            .replace(/\bبسیار\b/g, 'خیلی') // Simplify adverbs
+            .replace(/\bهمچنین\b/g, 'مثلاً') // Simplify connectors
+            .replace(/\[.*?\]|\(.*?\)/g, '') // Remove citations or parentheses
             .trim();
 
-        if (this.positiveWords.size > 0 && Math.random() < 0.3) {
-            const positiveWord = Array.from(this.positiveWords)[Math.floor(Math.random() * this.positiveWords.size)];
-            result = `${result} وای، این ${positiveWord}ه! 😊`;
+        // Keep it short and sweet (max 100 chars)
+        if (simplified.length > 100) {
+            simplified = simplified.substring(0, 97) + '...';
         }
-        return result;
-    }
 
-    private cleanSnippet(snippet: string): string {
-        return snippet
-            .replace(/<span class="searchmatch">|<\/span>/g, "")
-            .replace(/"/g, "\"")
-            .replace(/'/g, "'")
-            .replace(/[^\u0600-\u06FF\s.,!?0-9]/g, "")
-            .replace(/\s+/g, " ")
-            .trim();
-    }
-
-    private tokenize(text: string): string[] {
-        return text
-            .toLowerCase()
-            .replace(/[^\u0600-\u06FF\s]/g, "")
-            .replace(/[.,!?;:؟]/g, " ")
-            .split(/\s+/)
-            .filter(token => token.length > 1 && !this.stopWords.has(token));
-    }
-
-    private getFallbackResponse(): string {
-        if (!Config.fallbackResponses || Config.fallbackResponses.length === 0) {
-            return "وای، اینو نفهمیدم! یه جور دیگه بگو 😊";
-        }
-        return Config.fallbackResponses[Math.floor(Math.random() * Config.fallbackResponses.length)];
-    }
-
-    private getJokeOrMystery(): string | null {
-        const options = [...(Config.dictionaries?.jokes || []), ...(Config.dictionaries?.mysteries || [])];
-        if (options.length > 0) {
-            return options[Math.floor(Math.random() * options.length)];
-        }
-        return null;
+        // Ensure it’s not empty and sounds exciting
+        if (simplified.length < 10) return '';
+        return simplified.charAt(0).toUpperCase() + simplified.slice(1) + '!';
     }
 }
 /**
