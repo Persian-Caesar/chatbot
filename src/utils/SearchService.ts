@@ -11,6 +11,9 @@ export class SearchService {
     private stopWords: Set<string>;
 
     constructor() {
+        if (!this.SERP_API_KEY) {
+            console.warn("کلید SerpAPI تنظیم نشده! جستجوی وب محدود خواهد بود.");
+        }
         this.positiveWords = new Set(Config.dictionaries.positiveWords || []);
         this.negativeWords = new Set(Config.dictionaries.negativeWords || []);
         this.questionWords = new Set(Config.dictionaries.questionWords || []);
@@ -29,22 +32,37 @@ export class SearchService {
             // تشخیص سؤال
             const isQuestion = tokens.some(token => this.questionWords.has(token));
 
+            // برای سؤال‌های کوتاه یا خاص، مستقیم به پاسخ محلی برو
+            if (tokens.length < 3 || query.toLowerCase().includes("اسمت چیه")) {
+                const localResults = this.searchLocal(tokens);
+                if (localResults.length > 0) {
+                    return localResults;
+                }
+                return [this.getFallbackResponse()];
+            }
+
             // جستجو در SerpAPI (گوگل)
             const serpResults = await this.searchSerpAPI(query);
             if (serpResults.length > 0) {
-                results.push(...this.formatResults(serpResults, isQuestion, tokens));
+                results.push(...this.formatResults(serpResults, isQuestion, tokens, "SerpAPI"));
             }
 
             // جستجو در ویکی‌پدیا
             const wikiResults = await this.searchWikipedia(query);
             if (wikiResults.length > 0) {
-                results.push(...this.formatResults(wikiResults, isQuestion, tokens));
+                results.push(...this.formatResults(wikiResults, isQuestion, tokens, "Wikipedia"));
             }
 
             // اضافه کردن پاسخ‌های محلی از Config
             const localResults = this.searchLocal(tokens);
             if (localResults.length > 0) {
                 results.push(...localResults);
+            }
+
+            // اضافه کردن جوک یا معما برای جذابیت
+            if (isQuestion && Math.random() < 0.3) {
+                const extra = this.getJokeOrMystery();
+                if (extra) results.push(extra);
             }
 
             // اگر هیچ نتیجه‌ای نبود
@@ -67,7 +85,7 @@ export class SearchService {
 
         try {
             const params = new URLSearchParams({
-                q: query,
+                q: `${query} کودکانه کارتون`, // فیلتر قوی‌تر کودکانه
                 api_key: this.SERP_API_KEY,
                 hl: "fa",
                 gl: "ir",
@@ -97,7 +115,7 @@ export class SearchService {
             const params = new URLSearchParams({
                 action: "query",
                 list: "search",
-                srsearch: query,
+                srsearch: `${query} کودکانه`, // فیلتر کودکانه
                 format: "json",
                 utf8: "",
                 srlimit: "3"
@@ -125,8 +143,8 @@ export class SearchService {
 
     private searchLocal(tokens: string[]): string[] {
         const results: string[] = [];
-        // جستجو در موضوعات با استفاده از keywords
-        for (const [topic, keywords] of Object.entries(Config.keywords || {})) {
+        if (!Config.keywords) return results;
+        for (const [topic, keywords] of Object.entries(Config.keywords)) {
             if (tokens.some(token => keywords.includes(token))) {
                 const responses = Config.topicResponses?.[topic as keyof typeof Config.topicResponses] || [];
                 if (responses.length > 0) {
@@ -134,7 +152,6 @@ export class SearchService {
                 }
             }
         }
-        // جستجو در شخصیت‌های کارتونی و اسباب‌بازی‌ها
         for (const token of tokens) {
             if (this.cartoonCharacters.has(token)) {
                 results.push(`وای، ${token} خیلی باحاله! تو کدوم کارتونشو دوست داری؟ 😄`);
@@ -145,21 +162,30 @@ export class SearchService {
         return results;
     }
 
-    private formatResults(items: { text: string; url: string }[], isQuestion: boolean, tokens: string[]): string[] {
+    private formatResults(items: { text: string; url: string }[], isQuestion: boolean, tokens: string[], source: string): string[] {
         const results: string[] = [];
         const positiveCount = tokens.filter(t => this.positiveWords.has(t)).length;
         const negativeCount = tokens.filter(t => this.negativeWords.has(t)).length;
+        const childFriendlyScore = tokens.filter(t => this.cartoonCharacters.has(t) || this.toysList.has(t)).length;
 
         for (const item of items) {
+            // فیلتر نتایج نامرتبط
+            if (item.text.includes("مرگ") || item.text.includes("زندانی") || item.text.includes("جنگ")) {
+                continue; // حذف نتایج نامناسب
+            }
+
             let response = isQuestion ? "وای، یه چیز باحال پیدا کردم! 😊 " : "هورا! اینو نگاه کن! 🎉 ";
             response += this.rephraseChildlike(item.text);
             response += ` اگه دوست داشتی بیشتر بخونی، اینجا برو: ${item.url}`;
 
-            // اضافه کردن حس و حال احساسی
             if (positiveCount > negativeCount) {
                 response += " این خیلی شاد و خوبه! 😄";
             } else if (negativeCount > positiveCount) {
                 response += " اووه، یه کم غمگینه... بیا یه چیز شاد پیدا کنیم! 😔";
+            }
+
+            if (childFriendlyScore > 0) {
+                response += " این خیلی برای بچه‌ها باحاله! 🧸";
             }
 
             results.push(response);
@@ -177,8 +203,8 @@ export class SearchService {
             .replace(/\s+/g, " ")
             .trim();
 
-        if (this.positiveWords.size > 0) {
-            const positiveWord = Array.from(this.positiveWords)[0];
+        if (this.positiveWords.size > 0 && Math.random() < 0.3) {
+            const positiveWord = Array.from(this.positiveWords)[Math.floor(Math.random() * this.positiveWords.size)];
             result = `${result} وای، این ${positiveWord}ه! 😊`;
         }
         return result;
@@ -204,7 +230,18 @@ export class SearchService {
     }
 
     private getFallbackResponse(): string {
-        return Config.fallbackResponses?.[0] || "وای، اینو نفهمیدم! یه جور دیگه بگو 😊";
+        if (!Config.fallbackResponses || Config.fallbackResponses.length === 0) {
+            return "وای، اینو نفهمیدم! یه جور دیگه بگو 😊";
+        }
+        return Config.fallbackResponses[Math.floor(Math.random() * Config.fallbackResponses.length)];
+    }
+
+    private getJokeOrMystery(): string | null {
+        const options = [...(Config.dictionaries?.jokes || []), ...(Config.dictionaries?.mysteries || [])];
+        if (options.length > 0) {
+            return options[Math.floor(Math.random() * options.length)];
+        }
+        return null;
     }
 }
 /**
